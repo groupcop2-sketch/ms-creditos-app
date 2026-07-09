@@ -39,7 +39,7 @@ const envSchema = z.object({
     PGUSER: z.string().default('postgres'),
     PGPASSWORD: z.string().default(''),
     PGDATABASE: z.string().default('P&S'),
-    JWT_SECRET: z.string().min(1),
+    JWT_SECRET: z.string().min(1).default('dev-secret-change-me'),
     JWT_EXPIRES_IN: z.string().default('8h'),
     DATABASE_URL: z.string().optional(),
     APP_PUBLIC_URL: z.string().default('http://localhost:5173'),

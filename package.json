@@ -13,6 +13,8 @@
     "@fastify/cors": "^11.1.0",
     "@fastify/jwt": "^9.1.0",
     "@fastify/multipart": "^10.0.0",
+    "@fastify/swagger": "^9.8.0",
+    "@fastify/swagger-ui": "^6.1.0",
     "@supabase/supabase-js": "^2.110.2",
     "bcryptjs": "^3.0.2",
     "dotenv": "^17.4.2",

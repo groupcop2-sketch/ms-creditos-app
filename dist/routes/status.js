@@ -1,11 +1,16 @@
-import { pool } from '../lib/db.js';
+import { supabase } from '../lib/supabase.js';
 export async function statusRoutes(app) {
     app.get('/status', async () => {
-        const result = await pool.query('select now()::text as now, current_database() as database_name');
+        const { data, error } = await supabase.from('profiles').select('id').limit(1);
         return {
-            status: 'ok',
-            database: result.rows[0]?.database_name ?? 'unknown',
-            timestamp: result.rows[0]?.now ?? new Date().toISOString()
+            status: error ? 'degraded' : 'ok',
+            database: 'supabase',
+            timestamp: new Date().toISOString(),
+            supabase: {
+                connected: !error,
+                error: error?.message ?? null
+            },
+            sample: data?.[0] ?? null
         };
     });
 }

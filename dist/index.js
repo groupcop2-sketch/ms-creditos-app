@@ -1,6 +1,8 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
+import swagger from '@fastify/swagger';
+import swaggerUi from '@fastify/swagger-ui';
 import { ZodError } from 'zod';
 import { env } from './config/env.js';
 import { healthRoutes } from './routes/health.js';
@@ -42,7 +44,34 @@ async function main() {
     });
     await registerAuthPlugin(app);
     await app.register(multipart, { limits: { fileSize: 20 * 1024 * 1024 } });
-    await bootstrapSecurityModule();
+    await app.register(swagger, {
+        openapi: {
+            openapi: '3.0.0',
+            info: {
+                title: 'Créditos API',
+                version: '1.0.0',
+                description: 'Documentación de los servicios de crédito, seguridad, empresas y portal'
+            },
+            tags: [
+                { name: 'Security', description: 'Autenticación, usuarios, roles y permisos' },
+                { name: 'Créditos', description: 'Gestión de créditos y documentos' },
+                { name: 'Empresas', description: 'Gestión de empresas y pagadurías' },
+                { name: 'Portal', description: 'Operaciones del portal de clientes' }
+            ]
+        }
+    });
+    await app.register(swaggerUi, {
+        routePrefix: '/docs',
+        uiConfig: {
+            persistAuthorization: true
+        }
+    });
+    try {
+        await bootstrapSecurityModule();
+    }
+    catch (error) {
+        app.log.warn({ err: error }, 'No se pudo inicializar el catálogo de seguridad; la API continuará funcionando sin bootstrap de base de datos');
+    }
     await app.register(healthRoutes, { prefix: '/api/v1' });
     await app.register(statusRoutes, { prefix: '/api/v1' });
     await app.register(securityRoutes, { prefix: '/api/v1/security' });
