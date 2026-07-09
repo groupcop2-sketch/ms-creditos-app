@@ -117,29 +117,29 @@ export async function generateDocument(templateId: number, creditoId: number) {
     )
   ]);
   if (!dataResult.rowCount) throw new SecurityError('Credito no encontrado', 404);
-  const row = dataResult.rows[0];
+  const row = dataResult.rows[0] as Record<string, unknown>;
   const variables: Record<string, string> = {
-    'credito.consecutivo': row.consecutivo,
-    'credito.monto': money(row.val_monto_solicitado),
-    'credito.monto_letras': `${money(row.val_monto_solicitado)} PESOS COLOMBIANOS`,
-    'credito.plazo': String(row.num_plazo),
+    'credito.consecutivo': String(row.consecutivo ?? ''),
+    'credito.monto': money(row.val_monto_solicitado as string | number | null),
+    'credito.monto_letras': `${money(row.val_monto_solicitado as string | number | null)} PESOS COLOMBIANOS`,
+    'credito.plazo': String(row.num_plazo ?? ''),
     'credito.tasa': row.val_tasa ? `${row.val_tasa}%` : 'No aplica',
-    'credito.cuota': money(row.val_cuota_estimada),
-    'credito.fecha': new Date(row.fec_radicacion).toLocaleDateString('es-CO'),
-    'cliente.nombre_completo': row.v_nombre_cliente,
-    'cliente.identificacion': row.v_identificacion_cliente,
-    'cliente.correo': row.v_correo_cliente || '',
-    'cliente.telefono': row.v_telefono_cliente || '',
-    'empresa.razon_social': row.empresa || '',
-    'libranzera.razon_social': row.libranzera || '',
-    'producto.nombre': row.producto
+    'credito.cuota': money(row.val_cuota_estimada as string | number | null),
+    'credito.fecha': new Date(String(row.fec_radicacion ?? '')).toLocaleDateString('es-CO'),
+    'cliente.nombre_completo': String(row.v_nombre_cliente ?? ''),
+    'cliente.identificacion': String(row.v_identificacion_cliente ?? ''),
+    'cliente.correo': String(row.v_correo_cliente ?? ''),
+    'cliente.telefono': String(row.v_telefono_cliente ?? ''),
+    'empresa.razon_social': String(row.empresa ?? ''),
+    'libranzera.razon_social': String(row.libranzera ?? ''),
+    'producto.nombre': String(row.producto ?? '')
   };
   const rendered = renderTemplate(template.contenido, variables);
   const pdf = /<[a-z][\s\S]*>/i.test(rendered)
     ? await createRichPdf(template.nombre, rendered)
     : await createTextPdf(template.nombre, rendered);
   const hash = crypto.createHash('sha256').update(pdf).digest('hex');
-  const fileName = `${template.codigo}-${row.consecutivo}.pdf`;
+  const fileName = `${template.codigo}-${String(row.consecutivo ?? '')}.pdf`;
   const created = await pool.query<{ id: number }>(
     `insert into "Creditos"."TBL_DOCUMENTOS_GENERADOS"
       (id_credito, id_version_plantilla, nombre_archivo, contenido_pdf, variables_usadas, hash_documento)
@@ -252,22 +252,22 @@ export async function generateFromPdfBase(templateId: number, creditoId: number)
     )
   ]);
   if (!dataResult.rowCount) throw new SecurityError('Credito no encontrado', 404);
-  const row = dataResult.rows[0];
+  const row = dataResult.rows[0] as Record<string, unknown>;
   const variables: Record<string, string> = {
-    'credito.consecutivo': row.consecutivo,
-    'credito.monto': money(row.val_monto_solicitado),
-    'credito.monto_letras': `${money(row.val_monto_solicitado)} PESOS COLOMBIANOS`,
-    'credito.plazo': String(row.num_plazo),
+    'credito.consecutivo': String(row.consecutivo ?? ''),
+    'credito.monto': money(row.val_monto_solicitado as string | number | null),
+    'credito.monto_letras': `${money(row.val_monto_solicitado as string | number | null)} PESOS COLOMBIANOS`,
+    'credito.plazo': String(row.num_plazo ?? ''),
     'credito.tasa': row.val_tasa ? `${row.val_tasa}%` : '',
-    'credito.cuota': money(row.val_cuota_estimada),
-    'credito.fecha': new Date(row.fec_radicacion).toLocaleDateString('es-CO'),
-    'cliente.nombre_completo': row.v_nombre_cliente,
-    'cliente.identificacion': row.v_identificacion_cliente,
-    'cliente.correo': row.v_correo_cliente || '',
-    'cliente.telefono': row.v_telefono_cliente || '',
-    'empresa.razon_social': row.empresa || '',
-    'libranzera.razon_social': row.libranzera || '',
-    'producto.nombre': row.producto
+    'credito.cuota': money(row.val_cuota_estimada as string | number | null),
+    'credito.fecha': new Date(String(row.fec_radicacion ?? '')).toLocaleDateString('es-CO'),
+    'cliente.nombre_completo': String(row.v_nombre_cliente ?? ''),
+    'cliente.identificacion': String(row.v_identificacion_cliente ?? ''),
+    'cliente.correo': String(row.v_correo_cliente ?? ''),
+    'cliente.telefono': String(row.v_telefono_cliente ?? ''),
+    'empresa.razon_social': String(row.empresa ?? ''),
+    'libranzera.razon_social': String(row.libranzera ?? ''),
+    'producto.nombre': String(row.producto ?? '')
   };
   const pdf = await PDFDocument.load(base.contenido_pdf);
   const font = await pdf.embedFont(StandardFonts.Helvetica);
@@ -286,7 +286,7 @@ export async function generateFromPdfBase(templateId: number, creditoId: number)
   }
   const bytes = await pdf.save();
   const hash = crypto.createHash('sha256').update(bytes).digest('hex');
-  const fileName = `${template.codigo}-${row.consecutivo}.pdf`;
+  const fileName = `${template.codigo}-${String(row.consecutivo ?? '')}.pdf`;
   const created = await pool.query<{ id: number }>(
     `insert into "Creditos"."TBL_DOCUMENTOS_GENERADOS"
       (id_credito, id_version_plantilla, nombre_archivo, contenido_pdf, variables_usadas, hash_documento)

@@ -1,4 +1,4 @@
-import type { PoolClient } from 'pg';
+import type { ClientLike } from '../../lib/db.js';
 import { pool } from '../../lib/db.js';
 import { SecurityError } from '../security/security.service.js';
 
@@ -126,7 +126,7 @@ function nullableDate(value?: string | null) {
   return normalized;
 }
 
-async function withClient<T>(runner: (client: PoolClient) => Promise<T>) {
+async function withClient<T>(runner: (client: ClientLike) => Promise<T>) {
   const client = await pool.connect();
   try {
     return await runner(client);
@@ -135,7 +135,7 @@ async function withClient<T>(runner: (client: PoolClient) => Promise<T>) {
   }
 }
 
-async function ensureCreditoFondeoTable(client: PoolClient) {
+async function ensureCreditoFondeoTable(client: ClientLike) {
   await client.query(`
     create table if not exists "Creditos"."TBL_CREDITO_FONDEO" (
       id_credito_fondeo serial primary key,
@@ -150,7 +150,7 @@ async function ensureCreditoFondeoTable(client: PoolClient) {
   `);
 }
 
-async function ensureInversionistasTableShape(client: PoolClient) {
+async function ensureInversionistasTableShape(client: ClientLike) {
   await client.query(`
     alter table "Creditos"."TBL_INVERSIONISTAS"
       alter column v_primer_nombre type varchar(80),
@@ -207,7 +207,7 @@ function buildDireccionText(input: CreateDireccionInput) {
   ].filter(Boolean).join(' ');
 }
 
-async function upsertSocioDireccion(client: PoolClient, socioId: number, input: CreateDireccionInput) {
+async function upsertSocioDireccion(client: ClientLike, socioId: number, input: CreateDireccionInput) {
   const tipoEntidadId = await getInversionistaEntityTypeId(client);
   const currentPrincipal = await client.query<{ id_direccion: number }>(
     'select id_direccion from "Creditos"."TBL_DIRECCIONES" where id_tipo_entidad = $1 and id_entidad = $2 and coalesce(es_principal, false) = true limit 1',

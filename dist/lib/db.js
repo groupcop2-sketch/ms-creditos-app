@@ -65,8 +65,8 @@ async function querySupabase(text, values) {
         return { rowCount: 0, rows: [] };
     }
     if (/^select/i.test(trimmed)) {
-        const columns = normalizeColumns(trimmed);
-        const selectQuery = supabase.from(table).select(columns);
+        const columns = normalizeColumns(trimmed) ?? '*';
+        const selectQuery = supabase.from(table).select(columns ?? '*');
         const { data, error } = await selectQuery;
         if (error) {
             console.warn(`Supabase query failed for ${table}:`, error.message);

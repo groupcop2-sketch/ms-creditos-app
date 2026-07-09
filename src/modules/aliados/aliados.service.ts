@@ -1,4 +1,4 @@
-import type { PoolClient } from 'pg';
+import type { ClientLike } from '../../lib/db.js';
 import { pool } from '../../lib/db.js';
 import { SecurityError } from '../security/security.service.js';
 
@@ -128,7 +128,7 @@ function nullableNumber(value?: number | null) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
-async function withClient<T>(runner: (client: PoolClient) => Promise<T>) {
+async function withClient<T>(runner: (client: ClientLike) => Promise<T>) {
   const client = await pool.connect();
   try {
     return await runner(client);
@@ -183,7 +183,7 @@ function buildDireccionText(input: CreateDireccionInput) {
   ].filter(Boolean).join(' ');
 }
 
-async function upsertAliadoDireccion(client: PoolClient, aliadoId: number, input: CreateDireccionInput) {
+async function upsertAliadoDireccion(client: ClientLike, aliadoId: number, input: CreateDireccionInput) {
   const tipoEntidadId = await getAliadoEntityTypeId(client);
 
   await client.query(

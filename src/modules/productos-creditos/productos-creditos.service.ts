@@ -1,4 +1,4 @@
-import type { PoolClient } from 'pg';
+import type { ClientLike } from '../../lib/db.js';
 import { pool } from '../../lib/db.js';
 import { SecurityError } from '../security/security.service.js';
 
@@ -163,7 +163,7 @@ function nullableNumber(value?: number | null) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
-async function withClient<T>(runner: (client: PoolClient) => Promise<T>) {
+async function withClient<T>(runner: (client: ClientLike) => Promise<T>) {
   const client = await pool.connect();
   try {
     return await runner(client);
@@ -172,7 +172,7 @@ async function withClient<T>(runner: (client: PoolClient) => Promise<T>) {
   }
 }
 
-async function getActiveStateId(client: PoolClient) {
+async function getActiveStateId(client: ClientLike) {
   const result = await client.query<{ id_estado: number }>(
     'select id_estado from "Creditos"."TBL_ESTADOS" where lower(v_descripcion) = $1 limit 1',
     ['activo']
@@ -180,7 +180,7 @@ async function getActiveStateId(client: PoolClient) {
   return result.rows[0]?.id_estado ?? null;
 }
 
-async function ensureProductoCalendarioColumns(client: PoolClient) {
+async function ensureProductoCalendarioColumns(client: ClientLike) {
   await client.query(`
     alter table "Creditos"."TBL_PRODUCTOS_CREDITO"
       add column if not exists periodicidad varchar(20) null,
@@ -338,7 +338,7 @@ export async function createProductoCredito(input: CreateProductoCreditoInput) {
   });
 }
 
-async function generateProductoConsecutivo(client: PoolClient) {
+async function generateProductoConsecutivo(client: ClientLike) {
   const result = await client.query<{ next_value: number }>(
     `select coalesce(max(substring(consecutivo from '[0-9]+$')::int), 0) + 1 as next_value
      from "Creditos"."TBL_PRODUCTOS_CREDITO"
@@ -443,7 +443,7 @@ export async function updateProductoEtapa(productoId: number, productoEtapaId: n
   });
 }
 
-async function ensureProducto(client: PoolClient, productoId: number) {
+async function ensureProducto(client: ClientLike, productoId: number) {
   const exists = await client.query('select 1 from "Creditos"."TBL_PRODUCTOS_CREDITO" where id_producto_credito = $1 limit 1', [productoId]);
   if (!exists.rowCount) throw new SecurityError('Producto de credito no encontrado', 404);
 }

@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import type { PoolClient } from 'pg';
+import type { ClientLike } from '../../lib/db.js';
 import { env } from '../../config/env.js';
 import { pool } from '../../lib/db.js';
 import { SecurityError } from '../security/security.service.js';
@@ -15,7 +15,7 @@ export interface CrearFirmaInput {
   usuarioId?: number | null;
 }
 
-async function withClient<T>(runner: (client: PoolClient) => Promise<T>) {
+async function withClient<T>(runner: (client: ClientLike) => Promise<T>) {
   const client = await pool.connect();
   try {
     return await runner(client);
@@ -24,7 +24,7 @@ async function withClient<T>(runner: (client: PoolClient) => Promise<T>) {
   }
 }
 
-async function ensureFirmaTables(client: PoolClient) {
+async function ensureFirmaTables(client: ClientLike) {
   await client.query(`
     create table if not exists "Creditos"."TBL_CREDITO_FIRMAS" (
       id_credito_firma serial primary key,
@@ -64,7 +64,7 @@ async function ensureFirmaTables(client: PoolClient) {
   `);
 }
 
-async function addFirmaEvent(client: PoolClient, firmaId: number, evento: string, previo: string | null, nuevo: string | null, payload: unknown) {
+async function addFirmaEvent(client: ClientLike, firmaId: number, evento: string, previo: string | null, nuevo: string | null, payload: unknown) {
   await client.query(
     `insert into "Creditos"."TBL_CREDITO_FIRMA_EVENTOS" (
       id_credito_firma, evento, estado_anterior, estado_nuevo, payload

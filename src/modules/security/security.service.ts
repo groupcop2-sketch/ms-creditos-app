@@ -1,5 +1,5 @@
 import bcrypt from 'bcryptjs';
-import type { PoolClient } from 'pg';
+import type { ClientLike } from '../../lib/db.js';
 import { pool } from '../../lib/db.js';
 import type { JwtUserPayload, SecurityUserProfile } from '../../types/auth.js';
 
@@ -205,7 +205,7 @@ function isBcryptHash(value: string) {
   return /^\$2[aby]?\$\d{2}\$/.test(value);
 }
 
-async function withClient<T>(runner: (client: PoolClient) => Promise<T>) {
+async function withClient<T>(runner: (client: ClientLike) => Promise<T>) {
   const client = await pool.connect();
   try {
     return await runner(client);
@@ -227,7 +227,7 @@ async function getActiveStateId(client: Queryable = pool) {
   return result.rows[0].id_estado;
 }
 
-async function ensureModule(client: PoolClient, name: string, description: string) {
+async function ensureModule(client: ClientLike, name: string, description: string) {
   const existing = await client.query<{ id_modulo: number }>(
     'select id_modulo from "Creditos"."TBL_MODULOS" where lower(v_nom_modulo) = lower($1) limit 1',
     [name]
@@ -246,7 +246,7 @@ async function ensureModule(client: PoolClient, name: string, description: strin
 }
 
 async function ensureSubmodule(
-  client: PoolClient,
+  client: ClientLike,
   moduleId: number,
   name: string,
   description: string,
@@ -269,7 +269,7 @@ async function ensureSubmodule(
   return created.rows[0].id_sub_modulo;
 }
 
-async function ensurePermission(client: PoolClient, name: string, description: string) {
+async function ensurePermission(client: ClientLike, name: string, description: string) {
   const existing = await client.query<{ id_permiso: number }>(
     'select id_permiso from "Creditos"."TBL_PERMISOS" where lower(v_nom_permiso) = lower($1) limit 1',
     [name]
@@ -349,7 +349,7 @@ export async function hasUsers() {
   });
 }
 
-async function getStateIdOrActive(client: PoolClient, idEstado?: number) {
+async function getStateIdOrActive(client: ClientLike, idEstado?: number) {
   if (idEstado) {
     return idEstado;
   }
@@ -357,7 +357,7 @@ async function getStateIdOrActive(client: PoolClient, idEstado?: number) {
   return getActiveStateId(client);
 }
 
-async function getUserRoles(client: PoolClient, userId: number) {
+async function getUserRoles(client: ClientLike, userId: number) {
   const result = await client.query<{ id_rol: number; v_nom_rol: string }>(
     'select distinct r.id_rol, r.v_nom_rol from "Creditos"."TBL_USUARIO_ROLES" ur inner join "Creditos"."TBL_ROLES" r on r.id_rol = ur.id_rol where ur.id_usuario = $1 order by r.v_nom_rol',
     [userId]
@@ -366,7 +366,7 @@ async function getUserRoles(client: PoolClient, userId: number) {
   return result.rows.map((row) => row.v_nom_rol);
 }
 
-async function getUserPermissions(client: PoolClient, userId: number) {
+async function getUserPermissions(client: ClientLike, userId: number) {
   const result = await client.query<{ permiso: string }>(
     'select distinct permiso from "Creditos".fn_permisos_usuario($1) order by permiso',
     [userId]
@@ -375,7 +375,7 @@ async function getUserPermissions(client: PoolClient, userId: number) {
   return result.rows.map((row) => row.permiso);
 }
 
-async function mapUserProfile(client: PoolClient, userId: number): Promise<SecurityUserProfile> {
+async function mapUserProfile(client: ClientLike, userId: number): Promise<SecurityUserProfile> {
   const userResult = await client.query<UserListRow>(
     'select u.id_usuario, u.v_primer_nombre, u.v_segundo_nombre, u.v_primer_apellido, u.v_segundo_apellido, u.v_nom_completo, u.v_nom_usuario, u.v_correo, u.v_telefono, u.v_identificacion, u.id_tip_identificacion, u.id_estado, e.v_descripcion as estado, coalesce(array_agg(distinct r.v_nom_rol) filter (where r.v_nom_rol is not null), array[]::varchar[]) as roles from "Creditos"."TBL_USUARIOS" u inner join "Creditos"."TBL_ESTADOS" e on e.id_estado = u.id_estado left join "Creditos"."TBL_USUARIO_ROLES" ur on ur.id_usuario = u.id_usuario left join "Creditos"."TBL_ROLES" r on r.id_rol = ur.id_rol where u.id_usuario = $1 group by u.id_usuario, u.v_primer_nombre, u.v_segundo_nombre, u.v_primer_apellido, u.v_segundo_apellido, u.v_nom_completo, u.v_nom_usuario, u.v_correo, u.v_telefono, u.v_identificacion, u.id_tip_identificacion, u.id_estado, e.v_descripcion',
     [userId]
@@ -830,11 +830,14 @@ export async function getRolePermissions(roleId: number) {
       [roleId, 'activo']
     );
 
-    return result.rows.map((row) => ({
-      id: row.id_permiso,
-      nombre: row.v_nom_permiso,
-      descripcion: row.v_desc_rol
-    }));
+    return result.rows.map((row: unknown) => {
+      const item = row as Record<string, unknown>;
+      return {
+        id: item.id_permiso,
+        nombre: item.v_nom_permiso,
+        descripcion: item.v_desc_rol
+      };
+    });
   });
 }
 

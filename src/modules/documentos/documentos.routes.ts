@@ -31,7 +31,7 @@ export async function documentosRoutes(app: FastifyInstance) {
   app.post('/plantillas/:id/generar', { preHandler: [app.authenticate] }, async (request) => {
     const { id } = z.object({ id: z.coerce.number().positive() }).parse(request.params);
     const { creditoId } = z.object({ creditoId: z.coerce.number().positive() }).parse(request.body);
-    const template = await getTemplate(id);
+    const template = await getTemplate(id) as { modoPlantilla?: string };
     return template.modoPlantilla === 'PDF_BASE'
       ? generateFromPdfBase(id, creditoId)
       : generateDocument(id, creditoId);

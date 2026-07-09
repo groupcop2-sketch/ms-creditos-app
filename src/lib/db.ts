@@ -1,11 +1,11 @@
 import { supabase } from './supabase.js';
 
-type QueryResult<T> = { rowCount: number; rows: T[] };
+export type QueryResult<T> = { rowCount: number; rows: T[] };
 
-type ClientLike = {
+export interface ClientLike {
   query<T>(text: string, values?: unknown[]): Promise<QueryResult<T>>;
   release(): void;
-};
+}
 
 class SupabasePoolClient implements ClientLike {
   async query<T>(text: string, values?: unknown[]): Promise<QueryResult<T>> {
@@ -90,8 +90,8 @@ async function querySupabase<T>(text: string, values?: unknown[]): Promise<Query
   }
 
   if (/^select/i.test(trimmed)) {
-    const columns = normalizeColumns(trimmed);
-    const selectQuery = supabase.from(table).select(columns);
+    const columns = normalizeColumns(trimmed) ?? '*';
+    const selectQuery = supabase.from(table).select(columns ?? '*');
     const { data, error } = await selectQuery;
 
     if (error) {

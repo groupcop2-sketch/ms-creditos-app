@@ -1,4 +1,4 @@
-import type { PoolClient } from 'pg';
+import type { ClientLike } from '../../lib/db.js';
 import { pool } from '../../lib/db.js';
 import { SecurityError } from '../security/security.service.js';
 
@@ -177,7 +177,7 @@ function nullableNumber(value?: number | null) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
-async function withClient<T>(runner: (client: PoolClient) => Promise<T>) {
+async function withClient<T>(runner: (client: ClientLike) => Promise<T>) {
   const client = await pool.connect();
   try {
     return await runner(client);
@@ -195,7 +195,7 @@ async function getActiveStateId(client: Queryable = pool) {
   return result.rows[0]?.id_estado ?? null;
 }
 
-async function ensureEmpresaCalendarioColumns(client: PoolClient) {
+async function ensureEmpresaCalendarioColumns(client: ClientLike) {
   await client.query(`
     alter table "Creditos"."TBL_EMPRESAS"
       add column if not exists periodicidad_nomina varchar(20) null,
@@ -238,7 +238,7 @@ function buildDireccionText(input: CreateDireccionInput) {
   ].filter(Boolean).join(' ');
 }
 
-async function upsertEmpresaDireccion(client: PoolClient, empresaId: number, input: CreateDireccionInput) {
+async function upsertEmpresaDireccion(client: ClientLike, empresaId: number, input: CreateDireccionInput) {
   const tipoEntidadId = await getEmpresaEntityTypeId(client);
   const currentPrincipal = await client.query<{ id_direccion: number }>(
     'select id_direccion from "Creditos"."TBL_DIRECCIONES" where id_tipo_entidad = $1 and id_entidad = $2 and coalesce(es_principal, false) = true limit 1',
@@ -593,7 +593,7 @@ export async function createEmpleadoEmpresa(empresaId: number, input: CreateEmpl
   return withClient(async (client) => createEmpleadoEmpresaWithClient(client, empresaId, input));
 }
 
-async function createEmpleadoEmpresaWithClient(client: PoolClient, empresaId: number, input: CreateEmpleadoInput) {
+async function createEmpleadoEmpresaWithClient(client: ClientLike, empresaId: number, input: CreateEmpleadoInput) {
   const empresa = await client.query('select 1 from "Creditos"."TBL_EMPRESAS" where id_empresa = $1 limit 1', [empresaId]);
   if (!empresa.rowCount) {
     throw new SecurityError('Empresa no encontrada', 404);

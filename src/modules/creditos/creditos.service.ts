@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import type { PoolClient } from 'pg';
+import type { ClientLike } from '../../lib/db.js';
 import { pool } from '../../lib/db.js';
 import { SecurityError } from '../security/security.service.js';
 
@@ -364,7 +364,7 @@ interface AmortizacionDbRow {
   saldo: string;
 }
 
-async function withClient<T>(runner: (client: PoolClient) => Promise<T>) {
+async function withClient<T>(runner: (client: ClientLike) => Promise<T>) {
   const client = await pool.connect();
   try {
     return await runner(client);
@@ -415,7 +415,7 @@ function calculateInstallment(principal: number, monthlyRate: number, months: nu
   return principal * (monthlyRate / (1 - Math.pow(1 + monthlyRate, -months)));
 }
 
-async function getActiveStateId(client: PoolClient) {
+async function getActiveStateId(client: ClientLike) {
   const result = await client.query<{ id_estado: number }>(
     'select id_estado from "Creditos"."TBL_ESTADOS" where lower(v_descripcion) = $1 limit 1',
     ['activo']
@@ -423,7 +423,7 @@ async function getActiveStateId(client: PoolClient) {
   return result.rows[0]?.id_estado ?? null;
 }
 
-async function ensureCreditoHistorialTable(client: PoolClient) {
+async function ensureCreditoHistorialTable(client: ClientLike) {
   await client.query(`
     create table if not exists "Creditos"."TBL_CREDITO_HISTORIAL" (
       id_credito_historial serial primary key,
@@ -439,7 +439,7 @@ async function ensureCreditoHistorialTable(client: PoolClient) {
   `);
 }
 
-async function ensureCreditoDocumentoArchivosTable(client: PoolClient) {
+async function ensureCreditoDocumentoArchivosTable(client: ClientLike) {
   await client.query(`
     create table if not exists "Creditos"."TBL_CREDITO_DOCUMENTO_ARCHIVOS" (
       id_credito_documento_archivo serial primary key,
@@ -456,7 +456,7 @@ async function ensureCreditoDocumentoArchivosTable(client: PoolClient) {
   `);
 }
 
-async function ensureCreditoDecisionesTable(client: PoolClient) {
+async function ensureCreditoDecisionesTable(client: ClientLike) {
   await client.query(`
     create table if not exists "Creditos"."TBL_CREDITO_DECISIONES" (
       id_credito_decision serial primary key,
@@ -473,7 +473,7 @@ async function ensureCreditoDecisionesTable(client: PoolClient) {
   `);
 }
 
-async function ensureCreditoFirmasTable(client: PoolClient) {
+async function ensureCreditoFirmasTable(client: ClientLike) {
   await client.query(`
     create table if not exists "Creditos"."TBL_CREDITO_FIRMAS" (
       id_credito_firma serial primary key,
@@ -501,7 +501,7 @@ async function ensureCreditoFirmasTable(client: PoolClient) {
   `);
 }
 
-async function ensureCreditoDesembolsosTable(client: PoolClient) {
+async function ensureCreditoDesembolsosTable(client: ClientLike) {
   await client.query(`
     create table if not exists "Creditos"."TBL_CREDITO_DESEMBOLSOS" (
       id_credito_desembolso serial primary key,
@@ -519,7 +519,7 @@ async function ensureCreditoDesembolsosTable(client: PoolClient) {
   `);
 }
 
-async function ensureCreditoCuotasTable(client: PoolClient) {
+async function ensureCreditoCuotasTable(client: ClientLike) {
   await client.query(`
     create table if not exists "Creditos"."TBL_CREDITO_CUOTAS" (
       id_credito_cuota serial primary key,
@@ -554,7 +554,7 @@ async function ensureCreditoCuotasTable(client: PoolClient) {
   `);
 }
 
-async function ensureCreditoPagosTable(client: PoolClient) {
+async function ensureCreditoPagosTable(client: ClientLike) {
   await client.query(`
     create table if not exists "Creditos"."TBL_CREDITO_PAGOS" (
       id_credito_pago serial primary key,
@@ -576,7 +576,7 @@ async function ensureCreditoPagosTable(client: PoolClient) {
   `);
 }
 
-async function ensureCreditoPagoSoportesTable(client: PoolClient) {
+async function ensureCreditoPagoSoportesTable(client: ClientLike) {
   await ensureCreditoPagosTable(client);
   await client.query(`
     create table if not exists "Creditos"."TBL_CREDITO_PAGO_SOPORTES" (
@@ -594,7 +594,7 @@ async function ensureCreditoPagoSoportesTable(client: PoolClient) {
   `);
 }
 
-async function ensureCalendarioParamColumns(client: PoolClient) {
+async function ensureCalendarioParamColumns(client: ClientLike) {
   await client.query(`
     alter table "Creditos"."TBL_PRODUCTOS_CREDITO"
       add column if not exists periodicidad varchar(20) null,
@@ -662,7 +662,7 @@ function diffDays(start: Date, end: Date) {
   return Math.max(0, Math.floor((endUtc - startUtc) / 86400000));
 }
 
-async function recalcularMoraCredito(client: PoolClient, creditoId: number) {
+async function recalcularMoraCredito(client: ClientLike, creditoId: number) {
   await ensureCreditoCuotasTable(client);
   await ensureCalendarioParamColumns(client);
 
@@ -738,7 +738,7 @@ async function recalcularMoraCredito(client: PoolClient, creditoId: number) {
   );
 }
 
-async function ensureCreditoFondeoTable(client: PoolClient) {
+async function ensureCreditoFondeoTable(client: ClientLike) {
   await client.query(`
     create table if not exists "Creditos"."TBL_CREDITO_FONDEO" (
       id_credito_fondeo serial primary key,
@@ -755,7 +755,7 @@ async function ensureCreditoFondeoTable(client: PoolClient) {
 }
 
 async function addCreditoHistory(
-  client: PoolClient,
+  client: ClientLike,
   creditoId: number,
   etapaId: number | null,
   accion: string,
@@ -773,7 +773,7 @@ async function addCreditoHistory(
   );
 }
 
-async function generarCuotasDefinitivas(client: PoolClient, credito: CreditoRow, input: RegistrarDesembolsoInput) {
+async function generarCuotasDefinitivas(client: ClientLike, credito: CreditoRow, input: RegistrarDesembolsoInput) {
   await ensureCreditoCuotasTable(client);
 
   const periodicidad = input.periodicidad ?? 'MENSUAL';
@@ -835,7 +835,7 @@ async function generarCuotasDefinitivas(client: PoolClient, credito: CreditoRow,
   }
 }
 
-async function generateCreditoConsecutivo(client: PoolClient) {
+async function generateCreditoConsecutivo(client: ClientLike) {
   const result = await client.query<{ next_value: number }>(
     `select coalesce(max(substring(consecutivo from '[0-9]+$')::int), 0) + 1 as next_value
      from "Creditos"."TBL_CREDITOS"

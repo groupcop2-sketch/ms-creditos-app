@@ -425,18 +425,21 @@ export async function listPortalProductosCredito() {
      order by tasa_mensual desc nulls last, p.nombre`
   );
 
-  return result.rows.map((row) => ({
-    id: row.id,
-    nombre: row.nombre,
-    descripcion: row.descripcion,
-    montoMinimo: row.monto_minimo ? Number(row.monto_minimo) : null,
-    montoMaximo: row.monto_maximo ? Number(row.monto_maximo) : null,
-    plazoMinimo: row.plazo_minimo,
-    plazoMaximo: row.plazo_maximo,
-    tipoTasa: row.tipo_tasa,
-    tipoCredito: row.tipo_credito,
-    tasaMensual: row.tasa_mensual ? Number(row.tasa_mensual) : null
-  }));
+  return result.rows.map((row: unknown) => {
+    const item = row as Record<string, unknown>;
+    return {
+    id: item.id,
+    nombre: item.nombre,
+    descripcion: item.descripcion,
+    montoMinimo: item.monto_minimo ? Number(item.monto_minimo) : null,
+    montoMaximo: item.monto_maximo ? Number(item.monto_maximo) : null,
+    plazoMinimo: item.plazo_minimo,
+    plazoMaximo: item.plazo_maximo,
+    tipoTasa: item.tipo_tasa,
+    tipoCredito: item.tipo_credito,
+    tasaMensual: item.tasa_mensual ? Number(item.tasa_mensual) : null
+  };
+  });
 }
 
 export async function listPortalCreditos(clienteId: number) {

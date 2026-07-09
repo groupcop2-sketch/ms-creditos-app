@@ -422,11 +422,14 @@ export async function updatePermission(permissionId, input) {
 export async function getRolePermissions(roleId) {
     return withClient(async (client) => {
         const result = await client.query('select p.id_permiso, p.v_nom_permiso, p.v_desc_rol from "Creditos"."TBL_ROL_SUBMODULO_PERMISO" rsp inner join "Creditos"."TBL_PERMISOS" p on p.id_permiso = rsp.id_permiso inner join "Creditos"."TBL_ESTADOS" e on e.id_estado = rsp.id_estado where rsp.id_rol = $1 and lower(e.v_descripcion) = $2 order by p.v_nom_permiso', [roleId, 'activo']);
-        return result.rows.map((row) => ({
-            id: row.id_permiso,
-            nombre: row.v_nom_permiso,
-            descripcion: row.v_desc_rol
-        }));
+        return result.rows.map((row) => {
+            const item = row;
+            return {
+                id: item.id_permiso,
+                nombre: item.v_nom_permiso,
+                descripcion: item.v_desc_rol
+            };
+        });
     });
 }
 export async function listSecurityCatalogTree() {

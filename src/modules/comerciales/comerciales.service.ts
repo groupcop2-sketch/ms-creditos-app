@@ -1,4 +1,4 @@
-import type { PoolClient } from 'pg';
+import type { ClientLike } from '../../lib/db.js';
 import { pool } from '../../lib/db.js';
 import { SecurityError } from '../security/security.service.js';
 
@@ -128,7 +128,7 @@ function nullableText(value?: string | null) {
   return normalized || null;
 }
 
-async function withClient<T>(runner: (client: PoolClient) => Promise<T>) {
+async function withClient<T>(runner: (client: ClientLike) => Promise<T>) {
   const client = await pool.connect();
   try {
     return await runner(client);
@@ -137,7 +137,7 @@ async function withClient<T>(runner: (client: PoolClient) => Promise<T>) {
   }
 }
 
-async function getActiveStateId(client: PoolClient) {
+async function getActiveStateId(client: ClientLike) {
   const result = await client.query<{ id_estado: number }>(
     'select id_estado from "Creditos"."TBL_ESTADOS" where lower(v_descripcion) = $1 limit 1',
     ['activo']
@@ -145,7 +145,7 @@ async function getActiveStateId(client: PoolClient) {
   return result.rows[0]?.id_estado ?? null;
 }
 
-async function getInactiveStateId(client: PoolClient) {
+async function getInactiveStateId(client: ClientLike) {
   const result = await client.query<{ id_estado: number }>(
     `select id_estado from "Creditos"."TBL_ESTADOS"
      where lower(v_descripcion) in ('inactivo', 'inactiva')
@@ -160,7 +160,7 @@ async function getInactiveStateId(client: PoolClient) {
   return created.rows[0].id_estado;
 }
 
-async function ensureAsesoresTables(client: PoolClient) {
+async function ensureAsesoresTables(client: ClientLike) {
   await client.query(`
     create table if not exists "Creditos"."TBL_ROLES_VENDEDOR" (
       id_rol_vendedor serial primary key,
