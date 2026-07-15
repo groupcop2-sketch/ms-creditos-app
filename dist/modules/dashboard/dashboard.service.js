@@ -61,6 +61,14 @@ async function ensureOperationalDashboardTables() {
     )
   `);
     await pool.query(`
+    alter table "Creditos"."TBL_CREDITO_DESEMBOLSOS"
+      add column if not exists numero_orden varchar(80) null,
+      add column if not exists estado_desembolso varchar(30) not null default 'EJECUTADO',
+      add column if not exists fecha_orden date null,
+      add column if not exists fecha_ejecucion date null,
+      add column if not exists comprobante_pago varchar(180) null
+  `);
+    await pool.query(`
     create table if not exists "Creditos"."TBL_CREDITO_LIQUIDACIONES_FINALES" (
       id_credito_liquidacion_final serial primary key,
       id_credito integer not null references "Creditos"."TBL_CREDITOS"(id_credito) on delete cascade,
