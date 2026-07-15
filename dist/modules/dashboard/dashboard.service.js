@@ -19,12 +19,80 @@ async function ensureCarteraReportColumns() {
       add column if not exists saldo_favor numeric(18,2) not null default 0
   `);
 }
+async function ensureOperationalDashboardTables() {
+    await pool.query(`
+    create table if not exists "Creditos"."TBL_CREDITO_DECISIONES" (
+      id_credito_decision serial primary key,
+      id_credito integer not null references "Creditos"."TBL_CREDITOS"(id_credito) on delete cascade,
+      decision varchar(40) not null,
+      monto_aprobado numeric(18,2) null,
+      plazo_aprobado integer null,
+      tasa_aprobada numeric(10,4) null,
+      cuota_aprobada numeric(18,2) null,
+      observacion text null,
+      id_usuario integer null,
+      requiere_comite boolean not null default false,
+      votos_requeridos integer null,
+      estado_comite varchar(30) null,
+      fec_creacion timestamp without time zone not null default now()
+    )
+  `);
+    await pool.query(`alter table "Creditos"."TBL_CREDITO_DECISIONES" add column if not exists requiere_comite boolean not null default false`);
+    await pool.query(`alter table "Creditos"."TBL_CREDITO_DECISIONES" add column if not exists votos_requeridos integer null`);
+    await pool.query(`alter table "Creditos"."TBL_CREDITO_DECISIONES" add column if not exists estado_comite varchar(30) null`);
+    await pool.query(`
+    create table if not exists "Creditos"."TBL_CREDITO_DESEMBOLSOS" (
+      id_credito_desembolso serial primary key,
+      id_credito integer not null references "Creditos"."TBL_CREDITOS"(id_credito) on delete cascade,
+      valor_desembolso numeric(18,2) not null,
+      fecha_desembolso date not null,
+      banco_destino varchar(120) null,
+      tipo_cuenta varchar(40) null,
+      numero_cuenta varchar(80) null,
+      referencia_pago varchar(160) null,
+      numero_orden varchar(80) null,
+      estado_desembolso varchar(30) not null default 'EJECUTADO',
+      fecha_orden date null,
+      fecha_ejecucion date null,
+      comprobante_pago varchar(180) null,
+      observacion text null,
+      id_usuario integer null,
+      fec_creacion timestamp without time zone not null default now()
+    )
+  `);
+    await pool.query(`
+    create table if not exists "Creditos"."TBL_CREDITO_LIQUIDACIONES_FINALES" (
+      id_credito_liquidacion_final serial primary key,
+      id_credito integer not null references "Creditos"."TBL_CREDITOS"(id_credito) on delete cascade,
+      numero_version integer not null,
+      estado varchar(30) not null default 'VIGENTE',
+      monto_solicitado numeric(18,2) not null,
+      monto_aprobado numeric(18,2) null,
+      plazo integer not null,
+      tasa_mensual numeric(10,4) not null default 0,
+      cuota numeric(18,2) not null,
+      cargos_financiados numeric(18,2) not null default 0,
+      descuentos_desembolso numeric(18,2) not null default 0,
+      iva numeric(18,2) not null default 0,
+      valor_desembolso numeric(18,2) not null,
+      valor_credito numeric(18,2) not null,
+      total_intereses numeric(18,2) not null default 0,
+      total_pagar numeric(18,2) not null default 0,
+      conceptos jsonb not null default '[]'::jsonb,
+      plan_pagos jsonb not null default '[]'::jsonb,
+      observacion text null,
+      id_usuario integer null,
+      fec_creacion timestamp without time zone not null default now()
+    )
+  `);
+}
 export async function getDashboardGerencial(filters) {
     await ensureCarteraReportColumns();
+    await ensureOperationalDashboardTables();
     const params = [filters.fechaInicio || null, filters.fechaFin || null];
     const creditFilter = `($1::date is null or c.fec_radicacion::date >= $1::date)
     and ($2::date is null or c.fec_radicacion::date <= $2::date)`;
-    const [indicators, investors, states, monthly, companies, products, carteraResumen, vencida, proximos, recaudoMensual, carteraEmpresas, carteraProductos, carteraSocios] = await Promise.all([
+    const [indicators, investors, states, monthly, companies, products, carteraResumen, vencida, proximos, recaudoMensual, carteraEmpresas, carteraProductos, carteraSocios, desembolsos, comitePendiente, liquidacionesPendientes, documentosPendientes, moraEdades, pendientesRol, recaudoPagaduria] = await Promise.all([
         pool.query(`select count(*)::int as solicitudes,
         coalesce(sum(c.val_monto_solicitado), 0)::numeric as monto_solicitado,
         coalesce(sum(c.v_valor_pendiente), 0)::numeric as saldo_cartera,
@@ -123,9 +191,77 @@ export async function getDashboardGerencial(filters) {
        inner join "Creditos"."TBL_CREDITO_CUOTAS" q on q.id_credito = c.id_credito
        where q.estado <> 'PAGADA'
        group by i.v_nombre_completo
-       order by saldo desc limit 10`)
+       order by saldo desc limit 10`),
+        pool.query(`select count(*)::int as cantidad,
+        coalesce(sum(valor_desembolso), 0)::numeric as valor,
+        count(*) filter (where comprobante_pago is null or comprobante_pago = '')::int as pendientes_comprobante
+       from "Creditos"."TBL_CREDITO_DESEMBOLSOS"
+       where estado_desembolso <> 'ANULADO'
+         and ($1::date is null or fecha_desembolso >= $1::date)
+         and ($2::date is null or fecha_desembolso <= $2::date)`, params),
+        pool.query(`select count(distinct c.id_credito)::int as cantidad,
+        coalesce(sum(c.val_monto_solicitado), 0)::numeric as monto
+       from "Creditos"."TBL_CREDITOS" c
+       where c.v_estado_solicitud = 'COMITE_PENDIENTE'`),
+        pool.query(`select count(*)::int as cantidad, coalesce(sum(l.valor_desembolso), 0)::numeric as valor_desembolso
+       from "Creditos"."TBL_CREDITO_LIQUIDACIONES_FINALES" l
+       where l.estado = 'VIGENTE'
+         and not exists (
+           select 1 from "Creditos"."TBL_CREDITO_DESEMBOLSOS" d
+           where d.id_credito = l.id_credito and d.estado_desembolso <> 'ANULADO'
+         )`),
+        pool.query(`select count(*)::int as cantidad
+       from "Creditos"."TBL_CREDITO_DOCUMENTOS"
+       where estado_documento not in ('APROBADO', 'VALIDADO')`).catch(() => ({ rows: [{ cantidad: '0' }] })),
+        pool.query(`select case
+          when q.dias_mora between 1 and 30 then '1-30'
+          when q.dias_mora between 31 and 60 then '31-60'
+          when q.dias_mora between 61 and 90 then '61-90'
+          when q.dias_mora > 90 then '+90'
+          else 'Sin mora'
+        end as rango,
+        count(distinct q.id_credito)::int as cantidad,
+        coalesce(sum(greatest(q.valor_cuota + q.valor_mora - q.valor_pagado, 0)), 0)::numeric as saldo
+       from "Creditos"."TBL_CREDITO_CUOTAS" q
+       where q.estado <> 'PAGADA'
+       group by 1
+       order by min(q.dias_mora)`),
+        pool.query(`select case
+          when c.v_estado_solicitud in ('SOLICITADO', 'RADICADO', 'DOCUMENTOS') then 'Asesor'
+          when c.v_estado_solicitud in ('EN_ESTUDIO', 'ESTUDIO', 'ANALISIS') then 'Analista'
+          when c.v_estado_solicitud = 'COMITE_PENDIENTE' then 'Comite'
+          when c.v_estado_solicitud in ('EN_APROBACION', 'APROBADO') then 'Tesoreria'
+          when c.v_estado_solicitud in ('DESEMBOLSADO', 'EN_CARTERA') then 'Cartera'
+          else 'Operacion'
+        end as rol,
+        count(*)::int as cantidad,
+        coalesce(sum(c.val_monto_solicitado), 0)::numeric as valor
+       from "Creditos"."TBL_CREDITOS" c
+       where coalesce(c.v_estado_solicitud, '') not in ('RECHAZADO', 'CANCELADO', 'PAGADO')
+       group by 1
+       order by cantidad desc`),
+        pool.query(`select coalesce(e.v_razon_social, 'Sin empresa') as nombre,
+        coalesce(sum(p.valor_pago - p.saldo_favor), 0)::numeric as valor,
+        count(*)::int as pagos
+       from "Creditos"."TBL_CREDITO_PAGOS" p
+       inner join "Creditos"."TBL_CREDITOS" c on c.id_credito = p.id_credito
+       left join "Creditos"."TBL_EMPRESAS" e on e.id_empresa = c.id_empresa
+       where ($1::date is null or p.fecha_pago >= $1::date)
+         and ($2::date is null or p.fecha_pago <= $2::date)
+       group by coalesce(e.v_razon_social, 'Sin empresa')
+       order by valor desc limit 8`, params)
     ]);
     const row = indicators.rows[0];
+    const desembolsoRow = desembolsos.rows[0];
+    const comiteRow = comitePendiente.rows[0];
+    const liquidacionRow = liquidacionesPendientes.rows[0];
+    const documentosRow = documentosPendientes.rows[0];
+    const alertas = [
+        { tipo: 'COMITE', titulo: 'Aprobaciones de comite', cantidad: Number(comiteRow?.cantidad ?? 0), valor: Number(comiteRow?.monto ?? 0), severidad: Number(comiteRow?.cantidad ?? 0) > 0 ? 'ALTA' : 'INFO' },
+        { tipo: 'LIQUIDACION', titulo: 'Liquidaciones sin desembolso', cantidad: Number(liquidacionRow?.cantidad ?? 0), valor: Number(liquidacionRow?.valor_desembolso ?? 0), severidad: Number(liquidacionRow?.cantidad ?? 0) > 0 ? 'MEDIA' : 'INFO' },
+        { tipo: 'DESEMBOLSO', titulo: 'Desembolsos sin comprobante', cantidad: Number(desembolsoRow?.pendientes_comprobante ?? 0), valor: 0, severidad: Number(desembolsoRow?.pendientes_comprobante ?? 0) > 0 ? 'MEDIA' : 'INFO' },
+        { tipo: 'DOCUMENTOS', titulo: 'Documentos pendientes', cantidad: Number(documentosRow?.cantidad ?? 0), valor: 0, severidad: Number(documentosRow?.cantidad ?? 0) > 0 ? 'MEDIA' : 'INFO' }
+    ];
     return {
         indicadores: {
             solicitudes: Number(row.solicitudes),
@@ -138,7 +274,14 @@ export async function getDashboardGerencial(filters) {
             proximosVencimientos: Number(carteraResumen.rows[0]?.proximos_vencimientos ?? 0),
             recaudoHoy: Number(carteraResumen.rows[0]?.recaudo_hoy ?? 0),
             recaudoMes: Number(carteraResumen.rows[0]?.recaudo_mes ?? 0),
-            saldoFavor: Number(carteraResumen.rows[0]?.saldo_favor ?? 0)
+            saldoFavor: Number(carteraResumen.rows[0]?.saldo_favor ?? 0),
+            desembolsosPeriodo: Number(desembolsoRow?.valor ?? 0),
+            cantidadDesembolsos: Number(desembolsoRow?.cantidad ?? 0),
+            comitePendiente: Number(comiteRow?.cantidad ?? 0),
+            valorComitePendiente: Number(comiteRow?.monto ?? 0),
+            liquidacionesPendientes: Number(liquidacionRow?.cantidad ?? 0),
+            valorLiquidacionesPendientes: Number(liquidacionRow?.valor_desembolso ?? 0),
+            documentosPendientes: Number(documentosRow?.cantidad ?? 0)
         },
         estados: states.rows.map((item) => ({ estado: item.estado, cantidad: Number(item.cantidad), monto: Number(item.monto) })),
         mensual: monthly.rows.map((item) => ({ periodo: item.periodo, cantidad: Number(item.cantidad), monto: Number(item.monto) })),
@@ -151,7 +294,11 @@ export async function getDashboardGerencial(filters) {
             porEmpresa: carteraEmpresas.rows.map((item) => ({ nombre: item.nombre, cantidad: Number(item.cantidad), saldo: Number(item.saldo), vencido: Number(item.vencido) })),
             porProducto: carteraProductos.rows.map((item) => ({ nombre: item.nombre, cantidad: Number(item.cantidad), saldo: Number(item.saldo), vencido: Number(item.vencido) })),
             porSocio: carteraSocios.rows.map((item) => ({ nombre: item.nombre, cantidad: Number(item.cantidad), saldo: Number(item.saldo) }))
-        }
+        },
+        moraEdades: moraEdades.rows.map((item) => ({ rango: item.rango, cantidad: Number(item.cantidad), saldo: Number(item.saldo) })),
+        pendientesRol: pendientesRol.rows.map((item) => ({ rol: item.rol, cantidad: Number(item.cantidad), valor: Number(item.valor) })),
+        recaudoPagaduria: recaudoPagaduria.rows.map((item) => ({ nombre: item.nombre, valor: Number(item.valor), pagos: Number(item.pagos) })),
+        alertas
     };
 }
 export async function getReporteCartera(filters) {
@@ -285,5 +432,89 @@ export async function getReporteCartera(filters) {
         porEmpresa: empresas.rows.map((item) => ({ nombre: item.nombre, cantidad: Number(item.cantidad), saldo: Number(item.saldo), vencido: Number(item.vencido) })),
         porProducto: productos.rows.map((item) => ({ nombre: item.nombre, cantidad: Number(item.cantidad), saldo: Number(item.saldo), vencido: Number(item.vencido) })),
         porSocio: socios.rows.map((item) => ({ nombre: item.nombre, cantidad: Number(item.cantidad), saldo: Number(item.saldo) }))
+    };
+}
+export async function getReporteOperativo(filters) {
+    await ensureCarteraReportColumns();
+    await ensureOperationalDashboardTables();
+    const params = [filters.fechaInicio || null, filters.fechaFin || null, filters.idEmpresa || null, filters.idProducto || null, filters.estado || null];
+    const creditoFilter = `($1::date is null or c.fec_radicacion::date >= $1::date)
+    and ($2::date is null or c.fec_radicacion::date <= $2::date)
+    and ($3::int is null or c.id_empresa = $3::int)
+    and ($4::int is null or c.id_producto_credito = $4::int)
+    and ($5::varchar is null or c.v_estado_solicitud = $5::varchar)`;
+    const [catalogos, resumen, solicitudes, desembolsos, liquidaciones, comite] = await Promise.all([
+        Promise.all([
+            pool.query('select id_empresa as id, v_razon_social as nombre from "Creditos"."TBL_EMPRESAS" order by v_razon_social'),
+            pool.query('select id_producto_credito as id, nombre from "Creditos"."TBL_PRODUCTOS_CREDITO" order by nombre'),
+            pool.query(`select distinct coalesce(v_estado_solicitud, 'SOLICITADO') as estado from "Creditos"."TBL_CREDITOS" order by 1`)
+        ]),
+        pool.query(`select
+        count(*)::int as solicitudes,
+        coalesce(sum(c.val_monto_solicitado), 0)::numeric as monto_solicitado,
+        count(*) filter (where c.v_estado_solicitud in ('APROBADO', 'EN_APROBACION', 'DESEMBOLSADO', 'EN_CARTERA'))::int as aprobadas,
+        count(*) filter (where c.v_estado_solicitud = 'RECHAZADO')::int as rechazadas,
+        count(*) filter (where c.v_estado_solicitud = 'COMITE_PENDIENTE')::int as comite_pendiente,
+        coalesce((select count(*) from "Creditos"."TBL_CREDITO_LIQUIDACIONES_FINALES" l where l.estado = 'VIGENTE' and not exists (select 1 from "Creditos"."TBL_CREDITO_DESEMBOLSOS" d where d.id_credito = l.id_credito and d.estado_desembolso <> 'ANULADO')), 0)::int as liquidaciones_pendientes,
+        coalesce((select sum(l.valor_desembolso) from "Creditos"."TBL_CREDITO_LIQUIDACIONES_FINALES" l where l.estado = 'VIGENTE' and not exists (select 1 from "Creditos"."TBL_CREDITO_DESEMBOLSOS" d where d.id_credito = l.id_credito and d.estado_desembolso <> 'ANULADO')), 0)::numeric as valor_liquidaciones_pendientes,
+        coalesce((select count(*) from "Creditos"."TBL_CREDITO_DESEMBOLSOS" d where d.estado_desembolso <> 'ANULADO' and ($1::date is null or d.fecha_desembolso >= $1::date) and ($2::date is null or d.fecha_desembolso <= $2::date)), 0)::int as desembolsos,
+        coalesce((select sum(d.valor_desembolso) from "Creditos"."TBL_CREDITO_DESEMBOLSOS" d where d.estado_desembolso <> 'ANULADO' and ($1::date is null or d.fecha_desembolso >= $1::date) and ($2::date is null or d.fecha_desembolso <= $2::date)), 0)::numeric as valor_desembolsado
+       from "Creditos"."TBL_CREDITOS" c
+       where ${creditoFilter}`, params),
+        pool.query(`select c.consecutivo as credito, c.v_nombre_cliente as cliente, coalesce(e.v_razon_social, 'Sin empresa') as empresa, pc.nombre as producto,
+        coalesce(c.v_estado_solicitud, 'SOLICITADO') as estado, c.fec_radicacion::text as fecha, c.val_monto_solicitado as monto, c.num_plazo as plazo, c.val_cuota_estimada as cuota
+       from "Creditos"."TBL_CREDITOS" c
+       inner join "Creditos"."TBL_PRODUCTOS_CREDITO" pc on pc.id_producto_credito = c.id_producto_credito
+       left join "Creditos"."TBL_EMPRESAS" e on e.id_empresa = c.id_empresa
+       where ${creditoFilter}
+       order by c.fec_radicacion desc, c.id_credito desc
+       limit 300`, params),
+        pool.query(`select c.consecutivo as credito, c.v_nombre_cliente as cliente, coalesce(e.v_razon_social, 'Sin empresa') as empresa, d.fecha_desembolso::text as fecha_desembolso,
+        d.valor_desembolso, d.banco_destino, d.numero_orden, d.estado_desembolso, d.comprobante_pago
+       from "Creditos"."TBL_CREDITO_DESEMBOLSOS" d
+       inner join "Creditos"."TBL_CREDITOS" c on c.id_credito = d.id_credito
+       left join "Creditos"."TBL_EMPRESAS" e on e.id_empresa = c.id_empresa
+       where d.estado_desembolso <> 'ANULADO'
+         and ($1::date is null or d.fecha_desembolso >= $1::date)
+         and ($2::date is null or d.fecha_desembolso <= $2::date)
+         and ($3::int is null or c.id_empresa = $3::int)
+         and ($4::int is null or c.id_producto_credito = $4::int)
+       order by d.fecha_desembolso desc, d.id_credito_desembolso desc
+       limit 200`, params),
+        pool.query(`select c.consecutivo as credito, c.v_nombre_cliente as cliente, coalesce(e.v_razon_social, 'Sin empresa') as empresa, l.numero_version as version,
+        l.fec_creacion::text as fecha, l.valor_desembolso, l.valor_credito, l.cuota
+       from "Creditos"."TBL_CREDITO_LIQUIDACIONES_FINALES" l
+       inner join "Creditos"."TBL_CREDITOS" c on c.id_credito = l.id_credito
+       left join "Creditos"."TBL_EMPRESAS" e on e.id_empresa = c.id_empresa
+       where l.estado = 'VIGENTE'
+         and not exists (select 1 from "Creditos"."TBL_CREDITO_DESEMBOLSOS" d where d.id_credito = l.id_credito and d.estado_desembolso <> 'ANULADO')
+         and ($3::int is null or c.id_empresa = $3::int)
+         and ($4::int is null or c.id_producto_credito = $4::int)
+       order by l.fec_creacion desc
+       limit 200`, params),
+        pool.query(`select c.consecutivo as credito, c.v_nombre_cliente as cliente, coalesce(e.v_razon_social, 'Sin empresa') as empresa, c.val_monto_solicitado as monto,
+        count(distinct d.id_usuario)::int::text as votos, max(d.votos_requeridos) as votos_requeridos, max(d.fec_creacion)::text as fecha
+       from "Creditos"."TBL_CREDITOS" c
+       left join "Creditos"."TBL_EMPRESAS" e on e.id_empresa = c.id_empresa
+       left join "Creditos"."TBL_CREDITO_DECISIONES" d on d.id_credito = c.id_credito and d.requiere_comite = true and d.estado_comite in ('PENDIENTE', 'APROBADO')
+       where c.v_estado_solicitud = 'COMITE_PENDIENTE'
+         and ($3::int is null or c.id_empresa = $3::int)
+         and ($4::int is null or c.id_producto_credito = $4::int)
+       group by c.consecutivo, c.v_nombre_cliente, coalesce(e.v_razon_social, 'Sin empresa'), c.val_monto_solicitado
+       order by fecha desc nulls last
+       limit 200`, params)
+    ]);
+    const row = resumen.rows[0];
+    return {
+        filtros: { empresas: catalogos[0].rows, productos: catalogos[1].rows, estados: catalogos[2].rows.map((item) => item.estado) },
+        resumen: {
+            solicitudes: Number(row?.solicitudes ?? 0), montoSolicitado: Number(row?.monto_solicitado ?? 0), aprobadas: Number(row?.aprobadas ?? 0), rechazadas: Number(row?.rechazadas ?? 0),
+            comitePendiente: Number(row?.comite_pendiente ?? 0), liquidacionesPendientes: Number(row?.liquidaciones_pendientes ?? 0), valorLiquidacionesPendientes: Number(row?.valor_liquidaciones_pendientes ?? 0),
+            desembolsos: Number(row?.desembolsos ?? 0), valorDesembolsado: Number(row?.valor_desembolsado ?? 0)
+        },
+        solicitudes: solicitudes.rows.map((item) => ({ credito: item.credito, cliente: item.cliente, empresa: item.empresa, producto: item.producto, estado: item.estado, fecha: item.fecha, monto: Number(item.monto), plazo: item.plazo, cuota: item.cuota ? Number(item.cuota) : null })),
+        desembolsos: desembolsos.rows.map((item) => ({ credito: item.credito, cliente: item.cliente, empresa: item.empresa, fechaDesembolso: item.fecha_desembolso, valorDesembolso: Number(item.valor_desembolso), bancoDestino: item.banco_destino, numeroOrden: item.numero_orden, estadoDesembolso: item.estado_desembolso, comprobantePago: item.comprobante_pago })),
+        liquidacionesPendientes: liquidaciones.rows.map((item) => ({ credito: item.credito, cliente: item.cliente, empresa: item.empresa, version: item.version, fecha: item.fecha, valorDesembolso: Number(item.valor_desembolso), valorCredito: Number(item.valor_credito), cuota: Number(item.cuota) })),
+        comite: comite.rows.map((item) => ({ credito: item.credito, cliente: item.cliente, empresa: item.empresa, monto: Number(item.monto), votos: Number(item.votos), votosRequeridos: item.votos_requeridos, fecha: item.fecha }))
     };
 }

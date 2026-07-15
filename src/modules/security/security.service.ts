@@ -467,6 +467,7 @@ export async function listUsers() {
 
 export async function createUser(input: CreateUserInput) {
   return withClient(async (client) => {
+    await ensureRoleApprovalLimitColumn(client);
     const duplicates = await client.query(
       'select 1 from "Creditos"."TBL_USUARIOS" where lower(v_nom_usuario) = lower($1) or lower(v_correo) = lower($2) or v_identificacion = $3 limit 1',
       [normalizeText(input.nombreUsuario), normalizeText(input.correo), normalizeText(input.identificacion)]
@@ -585,6 +586,10 @@ export async function replaceUserRoles(userId: number, roleIds: number[]) {
   });
 }
 
+async function ensureRoleApprovalLimitColumn(client: ClientLike) {
+  await client.query(`alter table "Creditos"."TBL_ROLES" add column if not exists monto_maximo_aprobacion numeric(18,2) null`);
+  await client.query(`update "Creditos"."TBL_ROLES" set monto_maximo_aprobacion = null where lower(v_nom_rol) like '%admin%'`);
+}
 export async function listRoles() {
   return withClient(async (client) => {
     const result = await client.query<RoleRow>(
@@ -625,6 +630,7 @@ export async function createRole(input: CreateRoleInput) {
 
 export async function updateRole(roleId: number, input: UpdateRoleInput) {
   return withClient(async (client) => {
+    await ensureRoleApprovalLimitColumn(client);
     const existing = await client.query('select 1 from "Creditos"."TBL_ROLES" where id_rol = $1 limit 1', [roleId]);
     if (!existing.rowCount) {
       throw new SecurityError('Rol no encontrado', 404);

@@ -1,16 +1,31 @@
-import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+﻿import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { JwtUserPayload } from '../../types/auth.js';
 import {
   createProductoAtributo,
+  createTipoCalculoCredito,
+  createParametroFinanciero,
   createProductoCredito,
+  createProductoCreditoVersion,
   createProductoDocumento,
+  saveProductoConvenio,
   createProductoEtapa,
+  deleteProductoAtributo,
+  deleteProductoCredito,
+  deleteProductoConvenio,
+  deleteProductoDocumento,
+  deleteProductoEtapa,
+  listParametrosFinancieros,
   listProductoAtributos,
+  listProductoConvenios,
   listProductoDocumentos,
   listProductoEtapas,
   listProductosCredito,
   listProductosCreditoCatalogs,
+  updateProductoAtributo,
+  updateProductoCredito,
+  updateProductoCreditoEstado,
+  updateProductoDocumento,
   updateProductoEtapa
 } from './productos-creditos.service.js';
 
@@ -46,7 +61,36 @@ const productoSchema = z.object({
   tasaMoraMensual: z.coerce.number().min(0).nullable().optional(),
   primeraCuotaMesSiguiente: z.boolean().nullable().optional(),
   observacionCalendario: z.string().trim().nullable().optional(),
+  porcentajeEndeudamientoMaximo: z.coerce.number().min(0).max(100).nullable().optional(),
+  antiguedadMinimaMeses: z.coerce.number().int().min(0).nullable().optional(),
+  requiereEmpleadoActivo: z.boolean().nullable().optional(),
+  bloqueaEmbargos: z.boolean().nullable().optional(),
   idEstado: z.coerce.number().int().positive().nullable().optional()
+});
+
+const parametroSchema = z.object({
+  codigo: z.string().min(1),
+  nombre: z.string().min(1),
+  valor: z.coerce.number(),
+  unidad: z.enum(['VALOR', 'PORCENTAJE']),
+  vigenciaDesde: z.string().min(1),
+  vigenciaHasta: z.string().nullable().optional()
+});
+
+const estadoProductoSchema = z.object({
+  activo: z.boolean()
+});
+
+const formulaSchema = z.object({
+  nombre: z.string().min(1),
+  codigo: z.string().trim().nullable().optional(),
+  baseCalculo: z.enum(['VALOR_CREDITO', 'VALOR_DESEMBOLSO', 'SALDO', 'SMLMV', 'CUOTA', 'VALOR']).nullable().optional(),
+  operacion: z.enum(['VALOR_FIJO', 'PORCENTAJE', 'VALOR_POR_PLAZO', 'BASE_POR_VALOR_DIV_VALOR2']).nullable().optional(),
+  requiereValor: z.boolean().nullable().optional(),
+  requiereValor2: z.boolean().nullable().optional(),
+  requierePorcentaje: z.boolean().nullable().optional(),
+  aplicaMinimo: z.boolean().nullable().optional(),
+  aplicaMaximo: z.boolean().nullable().optional()
 });
 
 const atributoSchema = z.object({
@@ -55,12 +99,25 @@ const atributoSchema = z.object({
   nombre: z.string().min(1),
   valor: z.coerce.number().nullable().optional(),
   porcentaje: z.coerce.number().nullable().optional(),
+  valor2: z.coerce.number().nullable().optional(),
   minimo: z.coerce.number().nullable().optional(),
   maximo: z.coerce.number().nullable().optional(),
   aplicaIva: z.boolean().nullable().optional(),
   obligatorio: z.boolean().nullable().optional(),
   proveedor: z.string().trim().nullable().optional(),
   prioridad: z.coerce.number().int().positive().nullable().optional()
+});
+
+const convenioSchema = z.object({
+  idEmpresa: z.coerce.number().int().positive(),
+  cupoTotal: z.coerce.number().nonnegative().nullable().optional(),
+  cupoUsado: z.coerce.number().nonnegative().nullable().optional(),
+  porcentajeEndeudamientoMaximo: z.coerce.number().min(0).max(100).nullable().optional(),
+  requiereValidacionPagaduria: z.boolean().nullable().optional(),
+  vigenciaDesde: z.string().trim().nullable().optional(),
+  vigenciaHasta: z.string().trim().nullable().optional(),
+  activo: z.boolean().nullable().optional(),
+  observacion: z.string().trim().nullable().optional()
 });
 
 const documentoSchema = z.object({
@@ -94,6 +151,18 @@ function requirePermission(permission: string) {
 export async function productosCreditosRoutes(app: FastifyInstance) {
   app.get('/catalogos', { preHandler: [app.authenticate] }, async () => listProductosCreditoCatalogs());
 
+  app.get('/parametros', { preHandler: [app.authenticate] }, async () => listParametrosFinancieros());
+
+  app.post('/parametros', { preHandler: [app.authenticate, requirePermission('productos-creditos:create')] }, async (request) => {
+    const body = parametroSchema.parse(request.body);
+    return createParametroFinanciero(body);
+  });
+
+  app.post('/formulas', { preHandler: [app.authenticate, requirePermission('productos-creditos:create')] }, async (request) => {
+    const body = formulaSchema.parse(request.body);
+    return createTipoCalculoCredito(body);
+  });
+
   app.get('/', { preHandler: [app.authenticate, requirePermission('productos-creditos:read')] }, async () =>
     listProductosCredito()
   );
@@ -101,6 +170,28 @@ export async function productosCreditosRoutes(app: FastifyInstance) {
   app.post('/', { preHandler: [app.authenticate, requirePermission('productos-creditos:create')] }, async (request) => {
     const body = productoSchema.parse(request.body);
     return createProductoCredito(body);
+  });
+
+  app.put('/:id', { preHandler: [app.authenticate, requirePermission('productos-creditos:create')] }, async (request) => {
+    const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    const body = productoSchema.parse(request.body);
+    return updateProductoCredito(params.id, body);
+  });
+
+  app.patch('/:id/estado', { preHandler: [app.authenticate, requirePermission('productos-creditos:create')] }, async (request) => {
+    const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    const body = estadoProductoSchema.parse(request.body);
+    return updateProductoCreditoEstado(params.id, body.activo);
+  });
+
+  app.post('/:id/versiones', { preHandler: [app.authenticate, requirePermission('productos-creditos:create')] }, async (request) => {
+    const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    return createProductoCreditoVersion(params.id);
+  });
+
+  app.delete('/:id', { preHandler: [app.authenticate, requirePermission('productos-creditos:create')] }, async (request) => {
+    const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    return deleteProductoCredito(params.id);
   });
 
   app.get('/:id/atributos', { preHandler: [app.authenticate, requirePermission('productos-creditos:read')] }, async (request) => {
@@ -114,6 +205,39 @@ export async function productosCreditosRoutes(app: FastifyInstance) {
     return createProductoAtributo(params.id, body);
   });
 
+  app.put('/:id/atributos/:atributoId', { preHandler: [app.authenticate, requirePermission('productos-creditos:create')] }, async (request) => {
+    const params = z.object({
+      id: z.coerce.number().int().positive(),
+      atributoId: z.coerce.number().int().positive()
+    }).parse(request.params);
+    const body = atributoSchema.parse(request.body);
+    return updateProductoAtributo(params.id, params.atributoId, body);
+  });
+
+  app.delete('/:id/atributos/:atributoId', { preHandler: [app.authenticate, requirePermission('productos-creditos:create')] }, async (request) => {
+    const params = z.object({
+      id: z.coerce.number().int().positive(),
+      atributoId: z.coerce.number().int().positive()
+    }).parse(request.params);
+    return deleteProductoAtributo(params.id, params.atributoId);
+  });
+
+  app.get('/:id/convenios', { preHandler: [app.authenticate, requirePermission('productos-creditos:read')] }, async (request) => {
+    const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    return listProductoConvenios(params.id);
+  });
+
+  app.post('/:id/convenios', { preHandler: [app.authenticate, requirePermission('productos-creditos:create')] }, async (request) => {
+    const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    const body = convenioSchema.parse(request.body);
+    return saveProductoConvenio(params.id, body);
+  });
+
+  app.delete('/:id/convenios/:convenioId', { preHandler: [app.authenticate, requirePermission('productos-creditos:create')] }, async (request) => {
+    const params = z.object({ id: z.coerce.number().int().positive(), convenioId: z.coerce.number().int().positive() }).parse(request.params);
+    return deleteProductoConvenio(params.id, params.convenioId);
+  });
+
   app.get('/:id/documentos', { preHandler: [app.authenticate, requirePermission('productos-creditos:read')] }, async (request) => {
     const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
     return listProductoDocumentos(params.id);
@@ -123,6 +247,23 @@ export async function productosCreditosRoutes(app: FastifyInstance) {
     const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
     const body = documentoSchema.parse(request.body);
     return createProductoDocumento(params.id, body);
+  });
+
+  app.put('/:id/documentos/:documentoId', { preHandler: [app.authenticate, requirePermission('productos-creditos:create')] }, async (request) => {
+    const params = z.object({
+      id: z.coerce.number().int().positive(),
+      documentoId: z.coerce.number().int().positive()
+    }).parse(request.params);
+    const body = documentoSchema.parse(request.body);
+    return updateProductoDocumento(params.id, params.documentoId, body);
+  });
+
+  app.delete('/:id/documentos/:documentoId', { preHandler: [app.authenticate, requirePermission('productos-creditos:create')] }, async (request) => {
+    const params = z.object({
+      id: z.coerce.number().int().positive(),
+      documentoId: z.coerce.number().int().positive()
+    }).parse(request.params);
+    return deleteProductoDocumento(params.id, params.documentoId);
   });
 
   app.get('/:id/etapas', { preHandler: [app.authenticate, requirePermission('productos-creditos:read')] }, async (request) => {
@@ -144,4 +285,16 @@ export async function productosCreditosRoutes(app: FastifyInstance) {
     const body = etapaSchema.parse(request.body);
     return updateProductoEtapa(params.id, params.etapaId, body);
   });
+
+  app.delete('/:id/etapas/:etapaId', { preHandler: [app.authenticate, requirePermission('productos-creditos:create')] }, async (request) => {
+    const params = z.object({
+      id: z.coerce.number().int().positive(),
+      etapaId: z.coerce.number().int().positive()
+    }).parse(request.params);
+    return deleteProductoEtapa(params.id, params.etapaId);
+  });
 }
+
+
+
+

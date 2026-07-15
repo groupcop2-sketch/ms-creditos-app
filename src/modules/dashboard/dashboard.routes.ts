@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { getDashboardGerencial, getReporteCartera } from './dashboard.service.js';
+import { getDashboardGerencial, getReporteCartera, getReporteOperativo } from './dashboard.service.js';
 
 const filterSchema = z.object({
   fechaInicio: z.string().date().optional(),
