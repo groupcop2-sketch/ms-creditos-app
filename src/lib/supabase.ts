@@ -10,4 +10,5 @@ if (!supabaseUrl || !supabaseKey) {
   console.warn('Faltan variables de entorno para inicializar Supabase');
 }
 
+
 export const supabase = createClient(supabaseUrl, supabaseKey);
