@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { JwtUserPayload } from '../../types/auth.js';
-import { createInversion, createSocio, listInversiones, listSocios, listSociosCatalogs } from './socios.service.js';
+import { createInversion, createSocio, listInversiones, listSocios, listSociosCatalogs, updateSocio, updateSocioEstado } from './socios.service.js';
 
 const direccionSchema = z.object({
   idTipoVia: z.coerce.number().int().positive(),
@@ -45,6 +45,10 @@ const inversionSchema = z.object({
   idEstado: z.coerce.number().int().positive().nullable().optional()
 });
 
+const estadoSchema = z.object({
+  activo: z.boolean()
+});
+
 function requirePermission(permission: string) {
   return async (request: FastifyRequest, reply: FastifyReply) => {
     const user = request.user as JwtUserPayload | undefined;
@@ -66,6 +70,18 @@ export async function sociosRoutes(app: FastifyInstance) {
   app.post('/', { preHandler: [app.authenticate, requirePermission('socios:create')] }, async (request) => {
     const body = socioSchema.parse(request.body);
     return createSocio(body);
+  });
+
+  app.put('/:id', { preHandler: [app.authenticate, requirePermission('socios:create')] }, async (request) => {
+    const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    const body = socioSchema.parse(request.body);
+    return updateSocio(params.id, body);
+  });
+
+  app.patch('/:id/estado', { preHandler: [app.authenticate, requirePermission('socios:create')] }, async (request) => {
+    const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    const body = estadoSchema.parse(request.body);
+    return updateSocioEstado(params.id, body.activo);
   });
 
   app.get('/inversiones', { preHandler: [app.authenticate, requirePermission('socios:investments:read')] }, async () =>

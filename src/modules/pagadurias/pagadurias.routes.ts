@@ -9,7 +9,9 @@ import {
   listAddressCatalogs,
   listEmployeeCatalogs,
   listEmpleadosEmpresa,
-  listEmpresas
+  listEmpresas,
+  updateEmpresa,
+  updateEmpresaEstado
 } from './pagadurias.service.js';
 
 const direccionSchema = z.object({
@@ -92,6 +94,10 @@ const bulkEmpleadoSchema = z.object({
   empleados: z.array(empleadoSchema).min(1).max(1000)
 });
 
+const estadoSchema = z.object({
+  activo: z.boolean()
+});
+
 function parseBody<T>(schema: z.ZodType<T>, body: unknown) {
   return schema.parse(body);
 }
@@ -126,6 +132,18 @@ export async function pagaduriasRoutes(app: FastifyInstance) {
   app.get('/:id', { preHandler: [app.authenticate, requirePermission('empresas:read')] }, async (request) => {
     const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
     return getEmpresa(params.id);
+  });
+
+  app.put('/:id', { preHandler: [app.authenticate, requirePermission('empresas:create')] }, async (request) => {
+    const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    const body = parseBody(empresaSchema, request.body);
+    return updateEmpresa(params.id, body);
+  });
+
+  app.patch('/:id/estado', { preHandler: [app.authenticate, requirePermission('empresas:create')] }, async (request) => {
+    const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    const body = parseBody(estadoSchema, request.body);
+    return updateEmpresaEstado(params.id, body.activo);
   });
 
   app.get('/:id/empleados', { preHandler: [app.authenticate, requirePermission('empresas:employees:read')] }, async (request) => {

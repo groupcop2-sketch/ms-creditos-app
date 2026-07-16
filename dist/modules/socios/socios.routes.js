@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { createInversion, createSocio, listInversiones, listSocios, listSociosCatalogs } from './socios.service.js';
+import { createInversion, createSocio, listInversiones, listSocios, listSociosCatalogs, updateSocio, updateSocioEstado } from './socios.service.js';
 const direccionSchema = z.object({
     idTipoVia: z.coerce.number().int().positive(),
     numPrincipal: z.coerce.number().int().positive().nullable().optional(),
@@ -39,6 +39,9 @@ const inversionSchema = z.object({
     idTasaInversion: z.coerce.number().int().positive(),
     idEstado: z.coerce.number().int().positive().nullable().optional()
 });
+const estadoSchema = z.object({
+    activo: z.boolean()
+});
 function requirePermission(permission) {
     return async (request, reply) => {
         const user = request.user;
@@ -53,6 +56,16 @@ export async function sociosRoutes(app) {
     app.post('/', { preHandler: [app.authenticate, requirePermission('socios:create')] }, async (request) => {
         const body = socioSchema.parse(request.body);
         return createSocio(body);
+    });
+    app.put('/:id', { preHandler: [app.authenticate, requirePermission('socios:create')] }, async (request) => {
+        const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+        const body = socioSchema.parse(request.body);
+        return updateSocio(params.id, body);
+    });
+    app.patch('/:id/estado', { preHandler: [app.authenticate, requirePermission('socios:create')] }, async (request) => {
+        const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+        const body = estadoSchema.parse(request.body);
+        return updateSocioEstado(params.id, body.activo);
     });
     app.get('/inversiones', { preHandler: [app.authenticate, requirePermission('socios:investments:read')] }, async () => listInversiones());
     app.get('/:id/inversiones', { preHandler: [app.authenticate, requirePermission('socios:investments:read')] }, async (request) => {

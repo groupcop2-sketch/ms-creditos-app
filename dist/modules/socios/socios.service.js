@@ -60,6 +60,13 @@ async function getActiveStateId(client = pool) {
     const result = await client.query('select id_estado from "Creditos"."TBL_ESTADOS" where lower(v_descripcion) = $1 limit 1', ['activo']);
     return result.rows[0]?.id_estado;
 }
+async function getInactiveStateId(client = pool) {
+    const result = await client.query('select id_estado from "Creditos"."TBL_ESTADOS" where lower(v_descripcion) in ($1, $2) order by case when lower(v_descripcion) = $1 then 0 else 1 end limit 1', ['inactivo', 'inactiva']);
+    if (!result.rowCount) {
+        throw new SecurityError('No existe el estado Inactivo en TBL_ESTADOS', 400);
+    }
+    return result.rows[0].id_estado;
+}
 async function getInversionistaEntityTypeId(client = pool) {
     await client.query(`insert into "Creditos"."TBL_TIPO_ENTIDADES" (des_tipo_entidad, fec_creacion)
      select 'INVERSIONISTA', now()
@@ -322,6 +329,72 @@ export async function createSocio(input) {
             await client.query('rollback');
             throw error;
         }
+    });
+}
+export async function updateSocio(socioId, input) {
+    return withClient(async (client) => {
+        await ensureCreditoFondeoTable(client);
+        await ensureInversionistasTableShape(client);
+        await client.query('begin');
+        try {
+            const exists = await client.query('select 1 from "Creditos"."TBL_INVERSIONISTAS" where id_inversionista = $1 limit 1', [socioId]);
+            if (!exists.rowCount) {
+                throw new SecurityError('Socio no encontrado', 404);
+            }
+            const duplicate = await client.query('select 1 from "Creditos"."TBL_INVERSIONISTAS" where v_identificacion = $1 and id_inversionista <> $2 limit 1', [normalizeText(input.identificacion), socioId]);
+            if (duplicate.rowCount) {
+                throw new SecurityError('Ya existe un socio con esa identificacion', 409);
+            }
+            const cityId = input.direccion?.idCiudad ?? input.idCiudad;
+            if (!cityId) {
+                throw new SecurityError('La ciudad del socio es obligatoria', 400);
+            }
+            await client.query(`update "Creditos"."TBL_INVERSIONISTAS" set
+          v_identificacion = $2, v_primer_nombre = $3, v_seg_nombre = $4, v_primer_apell = $5, v_seg_apell = $6,
+          v_telefono = $7, v_correo = $8, v_nombre_completo = $9, v_direccion = $10, id_ciudad = $11,
+          id_tip_identificacion = $12, fec_nacimiento = $13, fec_actualizacion = now()
+         where id_inversionista = $1`, [
+                socioId,
+                normalizeText(input.identificacion),
+                normalizeText(input.primerNombre),
+                nullableText(input.segundoNombre) ?? '',
+                normalizeText(input.primerApellido),
+                nullableText(input.segundoApellido) ?? '',
+                normalizeText(input.telefono),
+                normalizeText(input.correo),
+                buildFullName(input),
+                input.direccion ? buildDireccionText(input.direccion) : '',
+                cityId,
+                input.idTipoIdentificacion,
+                nullableDate(input.fechaNacimiento)
+            ]);
+            if (input.direccion) {
+                await upsertSocioDireccion(client, socioId, input.direccion);
+            }
+            if (input.idBanco && input.idTipoCuenta && nullableText(input.numeroCuenta)) {
+                await client.query(`insert into "Creditos"."TBL_BANCO_PERSONAS" (id_banco, id_inversionista, id_tipo_cuenta, num_cuenta, fec_creacion)
+           values ($1, $2, $3, $4, now())`, [input.idBanco, socioId, input.idTipoCuenta, nullableText(input.numeroCuenta)]);
+            }
+            const result = await client.query(`${socioSelect} where i.id_inversionista = $1`, [socioId]);
+            await client.query('commit');
+            return mapSocio(result.rows[0]);
+        }
+        catch (error) {
+            await client.query('rollback');
+            throw error;
+        }
+    });
+}
+export async function updateSocioEstado(socioId, activo) {
+    return withClient(async (client) => {
+        await ensureInversionistasTableShape(client);
+        const stateId = activo ? await getActiveStateId(client) : await getInactiveStateId(client);
+        const updated = await client.query('update "Creditos"."TBL_INVERSIONISTAS" set id_estado = $2, fec_actualizacion = now() where id_inversionista = $1 returning id_inversionista', [socioId, stateId]);
+        if (!updated.rowCount) {
+            throw new SecurityError('Socio no encontrado', 404);
+        }
+        const result = await client.query(`${socioSelect} where i.id_inversionista = $1`, [socioId]);
+        return mapSocio(result.rows[0]);
     });
 }
 export async function listInversiones(socioId) {

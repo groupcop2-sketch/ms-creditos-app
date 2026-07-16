@@ -23,6 +23,13 @@ async function getActiveStateId(client = pool) {
     const result = await client.query('select id_estado from "Creditos"."TBL_ESTADOS" where lower(v_descripcion) = $1 limit 1', ['activo']);
     return result.rows[0]?.id_estado ?? null;
 }
+async function getInactiveStateId(client = pool) {
+    const result = await client.query('select id_estado from "Creditos"."TBL_ESTADOS" where lower(v_descripcion) in ($1, $2) order by case when lower(v_descripcion) = $1 then 0 else 1 end limit 1', ['inactivo', 'inactiva']);
+    if (!result.rowCount) {
+        throw new SecurityError('No existe el estado Inactivo en TBL_ESTADOS', 400);
+    }
+    return result.rows[0].id_estado;
+}
 async function ensureEmpresaCalendarioColumns(client) {
     await client.query(`
     alter table "Creditos"."TBL_EMPRESAS"
@@ -317,6 +324,78 @@ export async function createEmpresa(input) {
             await upsertEmpresaDireccion(client, created.rows[0].id_empresa, input.direccion);
         }
         return getEmpresa(created.rows[0].id_empresa);
+    });
+}
+export async function updateEmpresa(empresaId, input) {
+    return withClient(async (client) => {
+        await ensureEmpresaCalendarioColumns(client);
+        const exists = await client.query('select 1 from "Creditos"."TBL_EMPRESAS" where id_empresa = $1 limit 1', [empresaId]);
+        if (!exists.rowCount) {
+            throw new SecurityError('Empresa no encontrada', 404);
+        }
+        const duplicates = await client.query('select 1 from "Creditos"."TBL_EMPRESAS" where lower(v_nit) = lower($1) and id_empresa <> $2 limit 1', [normalizeText(input.nit), empresaId]);
+        if (duplicates.rowCount) {
+            throw new SecurityError('Ya existe una empresa con ese NIT', 409);
+        }
+        await client.query(`update "Creditos"."TBL_EMPRESAS" set
+        v_nit = $2, v_razon_social = $3, v_vendedor = $4, v_domicilio = $5, v_correo = $6, v_telefono = $7,
+        v_representante_legal = $8, v_telefono_representante = $9, v_tipo_identificacion_representante = $10,
+        v_identificacion_representante = $11, v_correo_representante = $12, v_codigo = $13,
+        v_contacto_cargo = $14, v_contacto_nombre = $15, v_contacto_correo = $16, v_contacto_telefono = $17,
+        fec_constitucion = $18, val_capital_sociedad = $19, fec_venta = $20, val_ventas_fecha = $21,
+        v_naturaleza = $22, v_camara_numero = $23, v_camara_libro = $24, v_camara_ciudad = $25,
+        periodicidad_nomina = $26, dia_corte_nomina = $27, dia_pago_nomina = $28, segundo_dia_pago_nomina = $29,
+        dia_descuento_libranza = $30, ajustar_fin_semana = $31, observacion_calendario = $32,
+        fec_actualizacion = now()
+       where id_empresa = $1`, [
+            empresaId,
+            normalizeText(input.nit),
+            normalizeText(input.razonSocial),
+            nullableText(input.vendedor),
+            nullableText(input.domicilio),
+            nullableText(input.correo),
+            nullableText(input.telefono),
+            nullableText(input.representanteLegal),
+            nullableText(input.telefonoRepresentante),
+            nullableText(input.tipoIdentificacionRepresentante),
+            nullableText(input.identificacionRepresentante),
+            nullableText(input.correoRepresentante),
+            nullableText(input.codigo),
+            nullableText(input.contactoCargo),
+            nullableText(input.contactoNombre),
+            nullableText(input.contactoCorreo),
+            nullableText(input.contactoTelefono),
+            input.fechaConstitucion || null,
+            nullableNumber(input.capitalSociedad),
+            input.fechaVenta || null,
+            nullableNumber(input.ventasFecha),
+            nullableText(input.naturaleza),
+            nullableText(input.camaraNumero),
+            nullableText(input.camaraLibro),
+            nullableText(input.camaraCiudad),
+            input.periodicidadNomina ?? 'MENSUAL',
+            nullableNumber(input.diaCorteNomina) ?? 25,
+            nullableNumber(input.diaPagoNomina) ?? 30,
+            nullableNumber(input.segundoDiaPagoNomina),
+            nullableNumber(input.diaDescuentoLibranza),
+            input.ajustarFinSemana ?? true,
+            nullableText(input.observacionCalendario)
+        ]);
+        if (input.direccion) {
+            await upsertEmpresaDireccion(client, empresaId, input.direccion);
+        }
+        return getEmpresa(empresaId);
+    });
+}
+export async function updateEmpresaEstado(empresaId, activo) {
+    return withClient(async (client) => {
+        await ensureEmpresaCalendarioColumns(client);
+        const stateId = activo ? await getActiveStateId(client) : await getInactiveStateId(client);
+        const updated = await client.query('update "Creditos"."TBL_EMPRESAS" set id_estado = $2, fec_actualizacion = now() where id_empresa = $1 returning id_empresa', [empresaId, stateId]);
+        if (!updated.rowCount) {
+            throw new SecurityError('Empresa no encontrada', 404);
+        }
+        return getEmpresa(empresaId);
     });
 }
 export async function listEmpleadosEmpresa(empresaId) {
