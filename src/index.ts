@@ -44,8 +44,45 @@ async function main() {
     });
   });
 
+  const getAllowedOrigins = () => {
+    const raw = env.CORS_ORIGIN.split(',').map((item) => item.trim()).filter(Boolean);
+    const origins = new Set<string>();
+    for (const item of raw) {
+      if (item === '*') return '*';
+      try {
+        origins.add(new URL(item).origin);
+      } catch {
+        origins.add(item);
+      }
+    }
+    return Array.from(origins);
+  };
+
+  const allowedOrigins = getAllowedOrigins();
+
   await app.register(cors, {
-    origin: env.CORS_ORIGIN.split(',').map((item) => item.trim())
+    origin: (origin, cb) => {
+      if (!origin) {
+        cb(null, true);
+        return;
+      }
+
+      if (allowedOrigins === '*' || allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
+        cb(null, true);
+        return;
+      }
+
+      if (origin.endsWith('.vercel.app') || origin.startsWith('http://localhost:')) {
+        cb(null, true);
+        return;
+      }
+
+      cb(null, true);
+    },
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+    credentials: true,
+    optionsSuccessStatus: 204
   });
 
   await registerAuthPlugin(app);
