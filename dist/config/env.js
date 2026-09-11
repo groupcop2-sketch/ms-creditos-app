@@ -33,7 +33,7 @@ loadEnvFile();
 const envSchema = z.object({
     API_PORT: z.coerce.number().int().positive().default(4000),
     API_HOST: z.string().default('0.0.0.0'),
-    CORS_ORIGIN: z.string().default('http://localhost:5173'),
+    CORS_ORIGIN: z.string().default('http://localhost:5173,https://creditos-app-psi.vercel.app'),
     PGHOST: z.string().default('127.0.0.1'),
     PGPORT: z.coerce.number().int().positive().default(5432),
     PGUSER: z.string().default('postgres'),

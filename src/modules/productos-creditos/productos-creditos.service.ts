@@ -700,13 +700,27 @@ export async function updateProductoAtributo(productoId: number, productoAtribut
   return withClient(async (client) => {
     await ensureFormulaColumns(client);
     await ensureProducto(client, productoId);
-    const updated = await client.query(
+    let updated = await client.query(
       `update "Creditos"."TBL_PRODUCTO_CREDITO_ATRIBUTOS"
        set id_tipo_atributo = $3, id_tipo_calculo = $4, nombre = $5, valor = $6, porcentaje = $7, valor2 = $8, minimo = $9, maximo = $10, aplica_iva = $11, obligatorio = $12, proveedor = $13, prioridad = $14
        where id_producto_credito = $1 and id_producto_atributo = $2`,
       [productoId, productoAtributoId, input.idTipoAtributo, input.idTipoCalculo, input.nombre.trim(), nullableNumber(input.valor), nullableNumber(input.porcentaje), nullableNumber(input.valor2), nullableNumber(input.minimo), nullableNumber(input.maximo), Boolean(input.aplicaIva), Boolean(input.obligatorio), nullableText(input.proveedor), nullableNumber(input.prioridad) ?? 1]
     );
-    if (!updated.rowCount) throw new SecurityError('Atributo del producto no encontrado', 404);
+    if (!updated.rowCount) {
+      updated = await client.query(
+        `update "Creditos"."TBL_PRODUCTO_CREDITO_ATRIBUTOS"
+         set id_tipo_atributo = $3, id_tipo_calculo = $4, nombre = $5, valor = $6, porcentaje = $7, valor2 = $8, minimo = $9, maximo = $10, aplica_iva = $11, obligatorio = $12, proveedor = $13, prioridad = $14
+         where id_producto_credito = $1 and id_tipo_atributo = $2`,
+        [productoId, productoAtributoId, input.idTipoAtributo, input.idTipoCalculo, input.nombre.trim(), nullableNumber(input.valor), nullableNumber(input.porcentaje), nullableNumber(input.valor2), nullableNumber(input.minimo), nullableNumber(input.maximo), Boolean(input.aplicaIva), Boolean(input.obligatorio), nullableText(input.proveedor), nullableNumber(input.prioridad) ?? 1]
+      );
+    }
+    if (!updated.rowCount) {
+      await client.query(
+        `insert into "Creditos"."TBL_PRODUCTO_CREDITO_ATRIBUTOS" (id_producto_credito, id_tipo_atributo, id_tipo_calculo, nombre, valor, porcentaje, valor2, minimo, maximo, aplica_iva, obligatorio, proveedor, prioridad)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+        [productoId, input.idTipoAtributo, input.idTipoCalculo, input.nombre.trim(), nullableNumber(input.valor), nullableNumber(input.porcentaje), nullableNumber(input.valor2), nullableNumber(input.minimo), nullableNumber(input.maximo), Boolean(input.aplicaIva), Boolean(input.obligatorio), nullableText(input.proveedor), nullableNumber(input.prioridad) ?? 1]
+      );
+    }
     return listProductoAtributos(productoId);
   });
 }
@@ -714,7 +728,10 @@ export async function updateProductoAtributo(productoId: number, productoAtribut
 export async function deleteProductoAtributo(productoId: number, productoAtributoId: number) {
   return withClient(async (client) => {
     await ensureProducto(client, productoId);
-    const deleted = await client.query('delete from "Creditos"."TBL_PRODUCTO_CREDITO_ATRIBUTOS" where id_producto_credito = $1 and id_producto_atributo = $2', [productoId, productoAtributoId]);
+    let deleted = await client.query('delete from "Creditos"."TBL_PRODUCTO_CREDITO_ATRIBUTOS" where id_producto_credito = $1 and id_producto_atributo = $2', [productoId, productoAtributoId]);
+    if (!deleted.rowCount) {
+      deleted = await client.query('delete from "Creditos"."TBL_PRODUCTO_CREDITO_ATRIBUTOS" where id_producto_credito = $1 and id_tipo_atributo = $2', [productoId, productoAtributoId]);
+    }
     if (!deleted.rowCount) throw new SecurityError('Atributo del producto no encontrado', 404);
     return listProductoAtributos(productoId);
   });
@@ -748,7 +765,7 @@ export async function listProductoDocumentos(productoId: number) {
 export async function updateProductoDocumento(productoId: number, productoDocumentoId: number, input: CreateProductoDocumentoInput) {
   return withClient(async (client) => {
     await ensureProducto(client, productoId);
-    const updated = await client.query(
+    let updated = await client.query(
       `update "Creditos"."TBL_PRODUCTO_CREDITO_DOCUMENTOS"
        set id_documento_credito = $3,
            obligatorio = $4,
@@ -760,7 +777,27 @@ export async function updateProductoDocumento(productoId: number, productoDocume
        where id_producto_credito = $1 and id_producto_documento = $2`,
       [productoId, productoDocumentoId, input.idDocumentoCredito, input.obligatorio ?? true, nullableText(input.grupo), nullableNumber(input.prioridad) ?? 1, nullableText(input.aplicaA) ?? 'CLIENTE', Boolean(input.requiereFirma), Boolean(input.requiereValidacion)]
     );
-    if (!updated.rowCount) throw new SecurityError('Documento del producto no encontrado', 404);
+    if (!updated.rowCount) {
+      updated = await client.query(
+        `update "Creditos"."TBL_PRODUCTO_CREDITO_DOCUMENTOS"
+         set id_documento_credito = $3,
+             obligatorio = $4,
+             grupo = $5,
+             prioridad = $6,
+             aplica_a = $7,
+             requiere_firma = $8,
+             requiere_validacion = $9
+         where id_producto_credito = $1 and id_documento_credito = $2`,
+        [productoId, productoDocumentoId, input.idDocumentoCredito, input.obligatorio ?? true, nullableText(input.grupo), nullableNumber(input.prioridad) ?? 1, nullableText(input.aplicaA) ?? 'CLIENTE', Boolean(input.requiereFirma), Boolean(input.requiereValidacion)]
+      );
+    }
+    if (!updated.rowCount) {
+      await client.query(
+        `insert into "Creditos"."TBL_PRODUCTO_CREDITO_DOCUMENTOS" (id_producto_credito, id_documento_credito, obligatorio, grupo, prioridad, aplica_a, requiere_firma, requiere_validacion)
+         values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [productoId, input.idDocumentoCredito, input.obligatorio ?? true, nullableText(input.grupo), nullableNumber(input.prioridad) ?? 1, nullableText(input.aplicaA) ?? 'CLIENTE', Boolean(input.requiereFirma), Boolean(input.requiereValidacion)]
+      );
+    }
     return listProductoDocumentos(productoId);
   });
 }
@@ -768,7 +805,10 @@ export async function updateProductoDocumento(productoId: number, productoDocume
 export async function deleteProductoDocumento(productoId: number, productoDocumentoId: number) {
   return withClient(async (client) => {
     await ensureProducto(client, productoId);
-    const deleted = await client.query('delete from "Creditos"."TBL_PRODUCTO_CREDITO_DOCUMENTOS" where id_producto_credito = $1 and id_producto_documento = $2', [productoId, productoDocumentoId]);
+    let deleted = await client.query('delete from "Creditos"."TBL_PRODUCTO_CREDITO_DOCUMENTOS" where id_producto_credito = $1 and id_producto_documento = $2', [productoId, productoDocumentoId]);
+    if (!deleted.rowCount) {
+      deleted = await client.query('delete from "Creditos"."TBL_PRODUCTO_CREDITO_DOCUMENTOS" where id_producto_credito = $1 and id_documento_credito = $2', [productoId, productoDocumentoId]);
+    }
     if (!deleted.rowCount) throw new SecurityError('Documento del producto no encontrado', 404);
     return listProductoDocumentos(productoId);
   });
@@ -866,7 +906,7 @@ export async function createProductoEtapa(productoId: number, input: CreateProdu
 export async function updateProductoEtapa(productoId: number, productoEtapaId: number, input: CreateProductoEtapaInput) {
   return withClient(async (client) => {
     await ensureProducto(client, productoId);
-    const updated = await client.query(
+    let updated = await client.query(
       `update "Creditos"."TBL_PRODUCTO_CREDITO_ETAPAS"
        set id_etapa_credito = $3,
            orden = $4,
@@ -877,7 +917,26 @@ export async function updateProductoEtapa(productoId: number, productoEtapaId: n
        where id_producto_credito = $1 and id_producto_etapa = $2`,
       [productoId, productoEtapaId, input.idEtapaCredito, input.orden, input.obligatoria ?? true, input.permiteDevolucion ?? true, nullableText(input.responsable), nullableNumber(input.slaHoras)]
     );
-    if (!updated.rowCount) throw new SecurityError('Etapa del producto no encontrada', 404);
+    if (!updated.rowCount) {
+      updated = await client.query(
+        `update "Creditos"."TBL_PRODUCTO_CREDITO_ETAPAS"
+         set id_etapa_credito = $3,
+             orden = $4,
+             obligatoria = $5,
+             permite_devolucion = $6,
+             responsable = $7,
+             sla_horas = $8
+         where id_producto_credito = $1 and id_etapa_credito = $2`,
+        [productoId, productoEtapaId, input.idEtapaCredito, input.orden, input.obligatoria ?? true, input.permiteDevolucion ?? true, nullableText(input.responsable), nullableNumber(input.slaHoras)]
+      );
+    }
+    if (!updated.rowCount) {
+      await client.query(
+        `insert into "Creditos"."TBL_PRODUCTO_CREDITO_ETAPAS" (id_producto_credito, id_etapa_credito, orden, obligatoria, permite_devolucion, responsable, sla_horas)
+         values ($1,$2,$3,$4,$5,$6,$7)`,
+        [productoId, input.idEtapaCredito, input.orden, input.obligatoria ?? true, input.permiteDevolucion ?? true, nullableText(input.responsable), nullableNumber(input.slaHoras)]
+      );
+    }
     return listProductoEtapas(productoId);
   });
 }
@@ -885,7 +944,10 @@ export async function updateProductoEtapa(productoId: number, productoEtapaId: n
 export async function deleteProductoEtapa(productoId: number, productoEtapaId: number) {
   return withClient(async (client) => {
     await ensureProducto(client, productoId);
-    const deleted = await client.query('delete from "Creditos"."TBL_PRODUCTO_CREDITO_ETAPAS" where id_producto_credito = $1 and id_producto_etapa = $2', [productoId, productoEtapaId]);
+    let deleted = await client.query('delete from "Creditos"."TBL_PRODUCTO_CREDITO_ETAPAS" where id_producto_credito = $1 and id_producto_etapa = $2', [productoId, productoEtapaId]);
+    if (!deleted.rowCount) {
+      deleted = await client.query('delete from "Creditos"."TBL_PRODUCTO_CREDITO_ETAPAS" where id_producto_credito = $1 and id_etapa_credito = $2', [productoId, productoEtapaId]);
+    }
     if (!deleted.rowCount) throw new SecurityError('Etapa del producto no encontrada', 404);
     return listProductoEtapas(productoId);
   });
