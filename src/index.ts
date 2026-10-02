@@ -18,6 +18,7 @@ import { comercialesRoutes } from './modules/comerciales/comerciales.routes.js';
 import { creditosRoutes } from './modules/creditos/creditos.routes.js';
 import { portalRoutes } from './modules/portal/portal.routes.js';
 import { productosCreditosRoutes } from './modules/productos-creditos/productos-creditos.routes.js';
+import { configuracionFinancieraRoutes } from './modules/productos-creditos/configuracion-financiera.routes.js';
 import { dashboardRoutes } from './modules/dashboard/dashboard.routes.js';
 import { documentosRoutes } from './modules/documentos/documentos.routes.js';
 import { firmasRoutes } from './modules/firmas/firmas.routes.js';
@@ -125,6 +126,8 @@ async function main() {
   await app.register(aliadosRoutes, { prefix: '/api/v1/aliados' });
   await app.register(comercialesRoutes, { prefix: '/api/v1/comerciales' });
   await app.register(productosCreditosRoutes, { prefix: '/api/v1/productos-creditos' });
+  await app.register(configuracionFinancieraRoutes, { prefix: '/api/v1/productos-creditos' });
+  await app.register(configuracionFinancieraRoutes, { prefix: '/api/v1' });
   await app.register(creditosRoutes, { prefix: '/api/v1/creditos' });
   await app.register(portalRoutes, { prefix: '/api/v1/portal' });
   await app.register(dashboardRoutes, { prefix: '/api/v1/dashboard' });
