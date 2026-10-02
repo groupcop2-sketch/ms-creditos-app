@@ -850,3 +850,443 @@ export async function deleteFormatoCredito(id: number): Promise<boolean> {
     return true;
   });
 }
+
+// ==========================================
+// 5. FIANZAS Y CALIFICACIONES (Screenshots 1 & 2)
+// ==========================================
+export interface CalificacionFianza {
+  id?: number;
+  letra: string;
+  porcentaje: number;
+}
+
+export interface FianzaRow {
+  id: number;
+  nombre: string;
+  cantidad: number;
+  calificaciones: CalificacionFianza[];
+  activo: boolean;
+  fecCreacion: string;
+  fecActualizacion?: string | null;
+}
+
+export interface SaveFianzaInput {
+  nombre: string;
+  activo?: boolean;
+  calificaciones: Array<{ letra: string; porcentaje: number }>;
+}
+
+export async function listFianzas(search?: string): Promise<FianzaRow[]> {
+  return withClient(async (client) => {
+    let query = `
+      SELECT f.id_fianza, f.nombre, f.activo, f.fec_creacion, f.fec_actualizacion,
+             COUNT(c.id_calificacion) as cantidad
+      FROM "Creditos"."TBL_TIPOS_FIANZA" f
+      LEFT JOIN "Creditos"."TBL_FIANZA_CALIFICACIONES" c ON f.id_fianza = c.id_fianza
+    `;
+    const params: unknown[] = [];
+    if (search && search.trim()) {
+      params.push(`%${search.trim().toLowerCase()}%`);
+      query += ` WHERE LOWER(f.nombre) LIKE $1`;
+    }
+    query += ` GROUP BY f.id_fianza, f.nombre, f.activo, f.fec_creacion, f.fec_actualizacion
+               ORDER BY f.id_fianza ASC`;
+
+    const res = await client.query<{
+      id_fianza: number;
+      nombre: string;
+      activo: boolean;
+      fec_creacion: string;
+      fec_actualizacion: string | null;
+      cantidad: string | number;
+    }>(query, params);
+
+    // Get all qualifications for these fianzas
+    const califsRes = await client.query<{
+      id_calificacion: number;
+      id_fianza: number;
+      letra: string;
+      porcentaje: string | number;
+    }>(`SELECT id_calificacion, id_fianza, letra, porcentaje
+        FROM "Creditos"."TBL_FIANZA_CALIFICACIONES"
+        ORDER BY id_calificacion ASC`);
+
+    const califsByFianza = new Map<number, CalificacionFianza[]>();
+    for (const c of califsRes.rows) {
+      const list = califsByFianza.get(c.id_fianza) || [];
+      list.push({
+        id: c.id_calificacion,
+        letra: c.letra,
+        porcentaje: Number(c.porcentaje)
+      });
+      califsByFianza.set(c.id_fianza, list);
+    }
+
+    return res.rows.map((r) => ({
+      id: r.id_fianza,
+      nombre: r.nombre,
+      cantidad: parseInt(String(r.cantidad || '0'), 10),
+      calificaciones: califsByFianza.get(r.id_fianza) || [],
+      activo: r.activo,
+      fecCreacion: r.fec_creacion,
+      fecActualizacion: r.fec_actualizacion
+    }));
+  });
+}
+
+export async function getFianza(id: number): Promise<FianzaRow> {
+  return withClient(async (client) => {
+    const fRes = await client.query<{
+      id_fianza: number;
+      nombre: string;
+      activo: boolean;
+      fec_creacion: string;
+      fec_actualizacion: string | null;
+    }>(`SELECT * FROM "Creditos"."TBL_TIPOS_FIANZA" WHERE id_fianza = $1`, [id]);
+
+    if (!fRes.rowCount) throw new SecurityError('Fianza no encontrada', 404);
+    const f = fRes.rows[0];
+
+    const cRes = await client.query<{
+      id_calificacion: number;
+      letra: string;
+      porcentaje: string | number;
+    }>(`SELECT id_calificacion, letra, porcentaje
+        FROM "Creditos"."TBL_FIANZA_CALIFICACIONES"
+        WHERE id_fianza = $1
+        ORDER BY id_calificacion ASC`, [id]);
+
+    const califs: CalificacionFianza[] = cRes.rows.map((c) => ({
+      id: c.id_calificacion,
+      letra: c.letra,
+      porcentaje: Number(c.porcentaje)
+    }));
+
+    return {
+      id: f.id_fianza,
+      nombre: f.nombre,
+      cantidad: califs.length,
+      calificaciones: califs,
+      activo: f.activo,
+      fecCreacion: f.fec_creacion,
+      fecActualizacion: f.fec_actualizacion
+    };
+  });
+}
+
+export async function createFianza(input: SaveFianzaInput): Promise<FianzaRow> {
+  return withClient(async (client) => {
+    const nombre = input.nombre.trim();
+    if (!nombre) throw new SecurityError('El nombre de la fianza es requerido', 400);
+
+    const fRes = await client.query<{
+      id_fianza: number;
+      nombre: string;
+      activo: boolean;
+      fec_creacion: string;
+      fec_actualizacion: string | null;
+    }>(`INSERT INTO "Creditos"."TBL_TIPOS_FIANZA" (nombre, activo)
+        VALUES ($1, $2)
+        RETURNING *`, [nombre, input.activo ?? true]);
+
+    const f = fRes.rows[0];
+    const savedCalifs: CalificacionFianza[] = [];
+
+    if (Array.isArray(input.calificaciones)) {
+      for (const c of input.calificaciones) {
+        if (!c.letra || !c.letra.trim()) continue;
+        const cRes = await client.query<{
+          id_calificacion: number;
+          letra: string;
+          porcentaje: string | number;
+        }>(`INSERT INTO "Creditos"."TBL_FIANZA_CALIFICACIONES" (id_fianza, letra, porcentaje)
+            VALUES ($1, $2, $3)
+            RETURNING id_calificacion, letra, porcentaje`,
+          [f.id_fianza, c.letra.trim(), Number(c.porcentaje) || 0]);
+        savedCalifs.push({
+          id: cRes.rows[0].id_calificacion,
+          letra: cRes.rows[0].letra,
+          porcentaje: Number(cRes.rows[0].porcentaje)
+        });
+      }
+    }
+
+    return {
+      id: f.id_fianza,
+      nombre: f.nombre,
+      cantidad: savedCalifs.length,
+      calificaciones: savedCalifs,
+      activo: f.activo,
+      fecCreacion: f.fec_creacion,
+      fecActualizacion: f.fec_actualizacion
+    };
+  });
+}
+
+export async function updateFianza(id: number, input: SaveFianzaInput): Promise<FianzaRow> {
+  return withClient(async (client) => {
+    const nombre = input.nombre.trim();
+    if (!nombre) throw new SecurityError('El nombre de la fianza es requerido', 400);
+
+    const fRes = await client.query<{
+      id_fianza: number;
+      nombre: string;
+      activo: boolean;
+      fec_creacion: string;
+      fec_actualizacion: string | null;
+    }>(`UPDATE "Creditos"."TBL_TIPOS_FIANZA"
+        SET nombre = $1, activo = $2, fec_actualizacion = NOW()
+        WHERE id_fianza = $3
+        RETURNING *`, [nombre, input.activo ?? true, id]);
+
+    if (!fRes.rowCount) throw new SecurityError('Fianza no encontrada', 404);
+    const f = fRes.rows[0];
+
+    // Re-insert qualifications
+    await client.query(`DELETE FROM "Creditos"."TBL_FIANZA_CALIFICACIONES" WHERE id_fianza = $1`, [id]);
+    const savedCalifs: CalificacionFianza[] = [];
+
+    if (Array.isArray(input.calificaciones)) {
+      for (const c of input.calificaciones) {
+        if (!c.letra || !c.letra.trim()) continue;
+        const cRes = await client.query<{
+          id_calificacion: number;
+          letra: string;
+          porcentaje: string | number;
+        }>(`INSERT INTO "Creditos"."TBL_FIANZA_CALIFICACIONES" (id_fianza, letra, porcentaje)
+            VALUES ($1, $2, $3)
+            RETURNING id_calificacion, letra, porcentaje`,
+          [id, c.letra.trim(), Number(c.porcentaje) || 0]);
+        savedCalifs.push({
+          id: cRes.rows[0].id_calificacion,
+          letra: cRes.rows[0].letra,
+          porcentaje: Number(cRes.rows[0].porcentaje)
+        });
+      }
+    }
+
+    return {
+      id: f.id_fianza,
+      nombre: f.nombre,
+      cantidad: savedCalifs.length,
+      calificaciones: savedCalifs,
+      activo: f.activo,
+      fecCreacion: f.fec_creacion,
+      fecActualizacion: f.fec_actualizacion
+    };
+  });
+}
+
+export async function deleteFianza(id: number): Promise<boolean> {
+  return withClient(async (client) => {
+    const res = await client.query(`DELETE FROM "Creditos"."TBL_TIPOS_FIANZA" WHERE id_fianza = $1`, [id]);
+    if (!res.rowCount) throw new SecurityError('Fianza no encontrada', 404);
+    return true;
+  });
+}
+
+// ==========================================
+// 6. PARÁMETROS FINANCIEROS (Salarios e IVA - Screenshot 3)
+// ==========================================
+export interface ParametroFinancieroRow {
+  id: number;
+  codigo: string;
+  nombre: string;
+  valor: number;
+  unidad: 'VALOR' | 'PORCENTAJE';
+  vigenciaDesde: string;
+  vigenciaHasta: string | null;
+  activo: boolean;
+  fecCreacion: string;
+}
+
+export interface SaveParametroInput {
+  codigo: string;
+  nombre: string;
+  valor: number;
+  unidad?: 'VALOR' | 'PORCENTAJE';
+  vigenciaDesde?: string;
+  vigenciaHasta?: string | null;
+  activo?: boolean;
+}
+
+export async function listParametrosFinancieros(search?: string, tipo?: 'SALARIOS' | 'IVA' | 'TODOS'): Promise<ParametroFinancieroRow[]> {
+  return withClient(async (client) => {
+    let query = `
+      SELECT id_parametro_financiero, codigo, nombre, valor, unidad,
+             vigencia_desde, vigencia_hasta, activo, fec_creacion
+      FROM "Creditos"."TBL_PARAMETROS_FINANCIEROS"
+      WHERE 1=1
+    `;
+    const params: unknown[] = [];
+    let idx = 1;
+
+    if (tipo === 'SALARIOS') {
+      query += ` AND (codigo ~* 'sml|salario|transporte|sueldo' OR unidad = 'VALOR')`;
+    } else if (tipo === 'IVA') {
+      query += ` AND (codigo ~* 'iva|impuesto' OR unidad = 'PORCENTAJE')`;
+    }
+
+    if (search && search.trim()) {
+      params.push(`%${search.trim().toLowerCase()}%`);
+      query += ` AND (LOWER(nombre) LIKE $${idx} OR LOWER(codigo) LIKE $${idx})`;
+      idx++;
+    }
+
+    query += ` ORDER BY id_parametro_financiero ASC`;
+
+    const res = await client.query<{
+      id_parametro_financiero: number;
+      codigo: string;
+      nombre: string;
+      valor: string | number;
+      unidad: string;
+      vigencia_desde: string;
+      vigencia_hasta: string | null;
+      activo: boolean;
+      fec_creacion: string;
+    }>(query, params);
+
+    return res.rows.map((r) => ({
+      id: r.id_parametro_financiero,
+      codigo: r.codigo,
+      nombre: r.nombre,
+      valor: Number(r.valor),
+      unidad: (r.unidad === 'PORCENTAJE' ? 'PORCENTAJE' : 'VALOR') as 'VALOR' | 'PORCENTAJE',
+      vigenciaDesde: r.vigencia_desde,
+      vigenciaHasta: r.vigencia_hasta,
+      activo: r.activo,
+      fecCreacion: r.fec_creacion
+    }));
+  });
+}
+
+export async function getParametroFinanciero(id: number): Promise<ParametroFinancieroRow> {
+  return withClient(async (client) => {
+    const res = await client.query<{
+      id_parametro_financiero: number;
+      codigo: string;
+      nombre: string;
+      valor: string | number;
+      unidad: string;
+      vigencia_desde: string;
+      vigencia_hasta: string | null;
+      activo: boolean;
+      fec_creacion: string;
+    }>(`SELECT * FROM "Creditos"."TBL_PARAMETROS_FINANCIEROS" WHERE id_parametro_financiero = $1`, [id]);
+
+    if (!res.rowCount) throw new SecurityError('Parámetro financiero no encontrado', 404);
+    const r = res.rows[0];
+    return {
+      id: r.id_parametro_financiero,
+      codigo: r.codigo,
+      nombre: r.nombre,
+      valor: Number(r.valor),
+      unidad: (r.unidad === 'PORCENTAJE' ? 'PORCENTAJE' : 'VALOR') as 'VALOR' | 'PORCENTAJE',
+      vigenciaDesde: r.vigencia_desde,
+      vigenciaHasta: r.vigencia_hasta,
+      activo: r.activo,
+      fecCreacion: r.fec_creacion
+    };
+  });
+}
+
+export async function createParametroFinanciero(input: SaveParametroInput): Promise<ParametroFinancieroRow> {
+  return withClient(async (client) => {
+    const codigo = input.codigo.trim().toUpperCase();
+    const nombre = input.nombre.trim();
+    if (!codigo || !nombre) throw new SecurityError('El código y nombre son requeridos', 400);
+
+    const res = await client.query<{
+      id_parametro_financiero: number;
+      codigo: string;
+      nombre: string;
+      valor: string | number;
+      unidad: string;
+      vigencia_desde: string;
+      vigencia_hasta: string | null;
+      activo: boolean;
+      fec_creacion: string;
+    }>(`INSERT INTO "Creditos"."TBL_PARAMETROS_FINANCIEROS"
+        (codigo, nombre, valor, unidad, vigencia_desde, vigencia_hasta, activo, fec_creacion)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+        RETURNING *`,
+      [
+        codigo,
+        nombre,
+        Number(input.valor) || 0,
+        input.unidad || 'VALOR',
+        input.vigenciaDesde || new Date().toISOString().split('T')[0],
+        input.vigenciaHasta || null,
+        input.activo ?? true
+      ]
+    );
+
+    const r = res.rows[0];
+    return {
+      id: r.id_parametro_financiero,
+      codigo: r.codigo,
+      nombre: r.nombre,
+      valor: Number(r.valor),
+      unidad: (r.unidad === 'PORCENTAJE' ? 'PORCENTAJE' : 'VALOR') as 'VALOR' | 'PORCENTAJE',
+      vigenciaDesde: r.vigencia_desde,
+      vigenciaHasta: r.vigencia_hasta,
+      activo: r.activo,
+      fecCreacion: r.fec_creacion
+    };
+  });
+}
+
+export async function updateParametroFinanciero(id: number, input: Partial<SaveParametroInput>): Promise<ParametroFinancieroRow> {
+  return withClient(async (client) => {
+    const existing = await getParametroFinanciero(id);
+
+    const codigo = input.codigo ? input.codigo.trim().toUpperCase() : existing.codigo;
+    const nombre = input.nombre ? input.nombre.trim() : existing.nombre;
+    const valor = input.valor !== undefined ? Number(input.valor) : existing.valor;
+    const unidad = input.unidad || existing.unidad;
+    const vigenciaDesde = input.vigenciaDesde || existing.vigenciaDesde;
+    const vigenciaHasta = input.vigenciaHasta !== undefined ? input.vigenciaHasta : existing.vigenciaHasta;
+    const activo = input.activo !== undefined ? input.activo : existing.activo;
+
+    const res = await client.query<{
+      id_parametro_financiero: number;
+      codigo: string;
+      nombre: string;
+      valor: string | number;
+      unidad: string;
+      vigencia_desde: string;
+      vigencia_hasta: string | null;
+      activo: boolean;
+      fec_creacion: string;
+    }>(`UPDATE "Creditos"."TBL_PARAMETROS_FINANCIEROS"
+        SET codigo = $1, nombre = $2, valor = $3, unidad = $4,
+            vigencia_desde = $5, vigencia_hasta = $6, activo = $7
+        WHERE id_parametro_financiero = $8
+        RETURNING *`,
+      [codigo, nombre, valor, unidad, vigenciaDesde, vigenciaHasta, activo, id]
+    );
+
+    if (!res.rowCount) throw new SecurityError('Parámetro financiero no encontrado', 404);
+    const r = res.rows[0];
+    return {
+      id: r.id_parametro_financiero,
+      codigo: r.codigo,
+      nombre: r.nombre,
+      valor: Number(r.valor),
+      unidad: (r.unidad === 'PORCENTAJE' ? 'PORCENTAJE' : 'VALOR') as 'VALOR' | 'PORCENTAJE',
+      vigenciaDesde: r.vigencia_desde,
+      vigenciaHasta: r.vigencia_hasta,
+      activo: r.activo,
+      fecCreacion: r.fec_creacion
+    };
+  });
+}
+
+export async function deleteParametroFinanciero(id: number): Promise<boolean> {
+  return withClient(async (client) => {
+    const res = await client.query(`DELETE FROM "Creditos"."TBL_PARAMETROS_FINANCIEROS" WHERE id_parametro_financiero = $1`, [id]);
+    if (!res.rowCount) throw new SecurityError('Parámetro financiero no encontrado', 404);
+    return true;
+  });
+}
