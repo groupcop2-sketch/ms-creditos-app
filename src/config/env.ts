@@ -68,7 +68,14 @@ const envSchema = z.object({
   DOCUSIGN_RSA_PRIVATE_KEY: z.string().optional(),
   DOCUSIGN_ACCESS_TOKEN: z.string().optional(),
   DOCUSIGN_WEBHOOK_SECRET: z.string().optional(),
-  DOCUSIGN_SIMULATION_MODE: z.coerce.boolean().default(true)
+  DOCUSIGN_SIMULATION_MODE: z.coerce.boolean().default(true),
+  JUMIO_DATACENTER: z.string().default('us'),
+  JUMIO_CLIENT_ID: z.string().optional(),
+  JUMIO_CLIENT_SECRET: z.string().optional(),
+  JUMIO_WEBHOOK_SECRET: z.string().optional(),
+  JUMIO_SIMULATION_MODE: z.coerce.boolean().default(true),
+  JUMIO_SUCCESS_URL: z.string().default('http://localhost:5174/?jumio=success'),
+  JUMIO_ERROR_URL: z.string().default('http://localhost:5174/?jumio=error')
 });
 
 export const env = envSchema.parse(process.env);

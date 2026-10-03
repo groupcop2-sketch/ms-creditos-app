@@ -16,12 +16,10 @@ async function main() {
   console.log('Connected to DB');
 
   const tables = await client.query(`
-    select table_schema, table_name
-    from information_schema.tables
-    where table_schema in ('Creditos', 'public')
-    order by table_schema, table_name
+    select id_empresa, v_codigo, v_razon_social
+    from "Creditos"."TBL_EMPRESAS"
   `);
-  console.log('Tables in Creditos and public:');
+  console.log('Empresas:');
   console.table(tables.rows);
 
   await client.end();

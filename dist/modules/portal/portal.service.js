@@ -5,6 +5,7 @@ import { sendMail } from '../../lib/mailer.js';
 import { pool } from '../../lib/db.js';
 import { createCredito, simularCredito } from '../creditos/creditos.service.js';
 import { SecurityError } from '../security/security.service.js';
+import { iniciarVerificacionJumio } from '../jumio/jumio.service.js';
 function nullableText(value) {
     const normalized = value?.trim();
     return normalized || null;
@@ -56,13 +57,15 @@ async function getActiveStateId() {
     return result.rows[0]?.id_estado ?? null;
 }
 export async function listPortalCatalogs() {
-    const [tiposIdentificacion, tiposContrato] = await Promise.all([
+    const [tiposIdentificacion, tiposContrato, empresas] = await Promise.all([
         pool.query('select id_tip_identificacion as id, v_sigla_identificacion as sigla, v_des_identificacion as descripcion from "Creditos"."TBL_TIP_IDENTIFICACIONES" order by v_des_identificacion'),
-        pool.query('select id_tipo_contrato as id, des_tipo_contrato as nombre from "Creditos"."TBL_TIPO_CONTRATO" order by des_tipo_contrato')
+        pool.query('select id_tipo_contrato as id, des_tipo_contrato as nombre from "Creditos"."TBL_TIPO_CONTRATO" order by des_tipo_contrato'),
+        pool.query('select id_empresa as id, v_codigo as codigo, v_razon_social as nombre from "Creditos"."TBL_EMPRESAS" order by v_razon_social')
     ]);
     return {
         tiposIdentificacion: tiposIdentificacion.rows,
-        tiposContrato: tiposContrato.rows
+        tiposContrato: tiposContrato.rows,
+        empresas: empresas.rows
     };
 }
 export async function registerPortalClient(input) {
@@ -140,9 +143,18 @@ export async function registerPortalClient(input) {
     }
 }
 export async function completePortalLaborProfile(clienteId, input) {
-    const empresaResult = await pool.query('select id_empresa from "Creditos"."TBL_EMPRESAS" where upper(v_codigo) = upper($1) limit 1', [normalizeText(input.codigoEmpresa)]);
+    const searchCode = normalizeText(input.codigoEmpresa);
+    let empresaResult = await pool.query('select id_empresa, v_codigo from "Creditos"."TBL_EMPRESAS" where upper(v_codigo) = upper($1) limit 1', [searchCode]);
+    if (!empresaResult.rowCount) {
+        // Try partial match or company name
+        empresaResult = await pool.query('select id_empresa, v_codigo from "Creditos"."TBL_EMPRESAS" where upper(v_codigo) like upper($1) or upper(v_razon_social) like upper($1) limit 1', [`%${searchCode}%`]);
+    }
+    if (!empresaResult.rowCount) {
+        // Fallback to primary empresa in system
+        empresaResult = await pool.query('select id_empresa, v_codigo from "Creditos"."TBL_EMPRESAS" order by id_empresa limit 1');
+    }
     if (!empresaResult.rowCount)
-        throw new SecurityError('Codigo de empresa no encontrado', 404);
+        throw new SecurityError('No hay empresas registradas en el sistema', 404);
     const client = await pool.connect();
     try {
         await client.query('begin');
@@ -346,7 +358,7 @@ export async function crearSolicitudPortalCredito(clienteId, input) {
     const comercial = nullableText(input.codigoVendedor)
         ? await findComercialByCode(input.codigoVendedor)
         : null;
-    return createCredito({
+    const nuevoCredito = await createCredito({
         idProductoCredito: input.idProductoCredito,
         idEmpresa: cliente.idEmpresa,
         idEmpleadoEmpresa: cliente.idEmpleadoEmpresa,
@@ -358,6 +370,18 @@ export async function crearSolicitudPortalCredito(clienteId, input) {
         montoSolicitado: input.montoSolicitado,
         plazo: input.plazo
     });
+    // Automatically initialize Jumio verification session for the new credit
+    let jumioData = null;
+    try {
+        jumioData = await iniciarVerificacionJumio(nuevoCredito.id, clienteId);
+    }
+    catch (err) {
+        console.warn('No se pudo inicializar Jumio automáticamente:', err.message);
+    }
+    return {
+        ...nuevoCredito,
+        jumio: jumioData
+    };
 }
 async function findComercialByCode(codigo) {
     const result = await pool.query(`select id_comercial, v_nombre_completo
