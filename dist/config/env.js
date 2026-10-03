@@ -51,6 +51,15 @@ const envSchema = z.object({
     SMTP_FROM: z.string().optional(),
     ZAPSIGN_API_URL: z.string().default('https://api.zapsign.com.br/api/v1'),
     ZAPSIGN_API_TOKEN: z.string().optional(),
-    ZAPSIGN_WEBHOOK_SECRET: z.string().optional()
+    ZAPSIGN_WEBHOOK_SECRET: z.string().optional(),
+    DOCUSIGN_ACCOUNT_ID: z.string().optional(),
+    DOCUSIGN_CLIENT_ID: z.string().optional(),
+    DOCUSIGN_USER_ID: z.string().optional(),
+    DOCUSIGN_AUTH_SERVER: z.string().default('account-d.docusign.com'),
+    DOCUSIGN_BASE_PATH: z.string().default('https://demo.docusign.net/restapi'),
+    DOCUSIGN_RSA_PRIVATE_KEY: z.string().optional(),
+    DOCUSIGN_ACCESS_TOKEN: z.string().optional(),
+    DOCUSIGN_WEBHOOK_SECRET: z.string().optional(),
+    DOCUSIGN_SIMULATION_MODE: z.coerce.boolean().default(true)
 });
 export const env = envSchema.parse(process.env);

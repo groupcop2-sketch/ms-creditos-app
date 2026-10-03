@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { listBancos, createBanco, updateBanco, deleteBanco, listTasas, createOrUpdateTasa, deleteTasa, validarEndpointDatosGovCo, sincronizarTasasDesdeDatosGovCo, listPlazos, createPlazo, updatePlazo, deletePlazo, listFormatosCredito, getFormatoCredito, createFormatoCredito, updateFormatoCredito, deleteFormatoCredito, CAMPOS_FORMATO_CREDITO_CATALOG } from './configuracion-financiera.service.js';
+import { listBancos, createBanco, updateBanco, deleteBanco, listTasas, createOrUpdateTasa, deleteTasa, validarEndpointDatosGovCo, sincronizarTasasDesdeDatosGovCo, listPlazos, createPlazo, updatePlazo, deletePlazo, listFormatosCredito, getFormatoCredito, createFormatoCredito, updateFormatoCredito, deleteFormatoCredito, CAMPOS_FORMATO_CREDITO_CATALOG, listFianzas, getFianza, createFianza, updateFianza, deleteFianza, listParametrosFinancieros, getParametroFinanciero, createParametroFinanciero, updateParametroFinanciero, deleteParametroFinanciero } from './configuracion-financiera.service.js';
 const bancoSchema = z.object({
     nombre: z.string().min(1, 'El nombre es requerido'),
     codigo: z.string().trim().nullable().optional()
@@ -134,6 +134,96 @@ export async function configuracionFinancieraRoutes(app) {
     app.delete('/formatos/:id', async (request, reply) => {
         const id = parseInt(request.params.id, 10);
         await deleteFormatoCredito(id);
+        return reply.code(204).send();
+    });
+    // ==========================================
+    // 5. FIANZAS Y CALIFICACIONES (Screenshots 1 & 2)
+    // ==========================================
+    app.get('/fianzas', async (request, reply) => {
+        const list = await listFianzas(request.query.search);
+        return reply.send(list);
+    });
+    app.get('/fianzas/:id', async (request, reply) => {
+        const id = parseInt(request.params.id, 10);
+        const item = await getFianza(id);
+        return reply.send(item);
+    });
+    app.post('/fianzas', async (request, reply) => {
+        const fianzaSchema = z.object({
+            nombre: z.string().min(1, 'El nombre es requerido'),
+            activo: z.boolean().optional().default(true),
+            calificaciones: z.array(z.object({
+                letra: z.string().min(1, 'La letra / categoría es requerida'),
+                porcentaje: z.coerce.number()
+            })).default([])
+        });
+        const parsed = fianzaSchema.parse(request.body);
+        const created = await createFianza(parsed);
+        return reply.code(201).send(created);
+    });
+    app.put('/fianzas/:id', async (request, reply) => {
+        const id = parseInt(request.params.id, 10);
+        const fianzaSchema = z.object({
+            nombre: z.string().min(1, 'El nombre es requerido'),
+            activo: z.boolean().optional().default(true),
+            calificaciones: z.array(z.object({
+                letra: z.string().min(1, 'La letra / categoría es requerida'),
+                porcentaje: z.coerce.number()
+            })).default([])
+        });
+        const parsed = fianzaSchema.parse(request.body);
+        const updated = await updateFianza(id, parsed);
+        return reply.send(updated);
+    });
+    app.delete('/fianzas/:id', async (request, reply) => {
+        const id = parseInt(request.params.id, 10);
+        await deleteFianza(id);
+        return reply.code(204).send();
+    });
+    // ==========================================
+    // 6. TIPOS DE SALARIOS Y PARÁMETROS (SMMLV, IVA - Screenshot 3)
+    // ==========================================
+    app.get('/salarios', async (request, reply) => {
+        const list = await listParametrosFinancieros(request.query.search, request.query.tipo);
+        return reply.send(list);
+    });
+    app.get('/salarios/:id', async (request, reply) => {
+        const id = parseInt(request.params.id, 10);
+        const item = await getParametroFinanciero(id);
+        return reply.send(item);
+    });
+    app.post('/salarios', async (request, reply) => {
+        const paramSchema = z.object({
+            codigo: z.string().min(1, 'El código es requerido'),
+            nombre: z.string().min(1, 'El nombre es requerido'),
+            valor: z.coerce.number(),
+            unidad: z.enum(['VALOR', 'PORCENTAJE']).default('VALOR'),
+            vigenciaDesde: z.string().optional(),
+            vigenciaHasta: z.string().nullable().optional(),
+            activo: z.boolean().optional().default(true)
+        });
+        const parsed = paramSchema.parse(request.body);
+        const created = await createParametroFinanciero(parsed);
+        return reply.code(201).send(created);
+    });
+    app.put('/salarios/:id', async (request, reply) => {
+        const id = parseInt(request.params.id, 10);
+        const paramSchema = z.object({
+            codigo: z.string().optional(),
+            nombre: z.string().optional(),
+            valor: z.coerce.number().optional(),
+            unidad: z.enum(['VALOR', 'PORCENTAJE']).optional(),
+            vigenciaDesde: z.string().optional(),
+            vigenciaHasta: z.string().nullable().optional(),
+            activo: z.boolean().optional()
+        });
+        const parsed = paramSchema.parse(request.body);
+        const updated = await updateParametroFinanciero(id, parsed);
+        return reply.send(updated);
+    });
+    app.delete('/salarios/:id', async (request, reply) => {
+        const id = parseInt(request.params.id, 10);
+        await deleteParametroFinanciero(id);
         return reply.code(204).send();
     });
 }

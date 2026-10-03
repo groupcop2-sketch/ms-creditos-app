@@ -22,6 +22,7 @@ import { configuracionFinancieraRoutes } from './modules/productos-creditos/conf
 import { dashboardRoutes } from './modules/dashboard/dashboard.routes.js';
 import { documentosRoutes } from './modules/documentos/documentos.routes.js';
 import { firmasRoutes } from './modules/firmas/firmas.routes.js';
+import { docusignRoutes } from './modules/firmas/docusign.routes.js';
 async function main() {
     const app = Fastify({ logger: true });
     app.setErrorHandler((error, request, reply) => {
@@ -123,6 +124,8 @@ async function main() {
     await app.register(dashboardRoutes, { prefix: '/api/v1/dashboard' });
     await app.register(documentosRoutes, { prefix: '/api/v1/documentos' });
     await app.register(firmasRoutes, { prefix: '/api/v1/firmas' });
+    await app.register(docusignRoutes, { prefix: '/api/v1/firmas/docusign' });
+    await app.register(docusignRoutes, { prefix: '/api/v1/docusign' });
     app.get('/api/v1', async () => ({
         name: 'creditos-api',
         version: '0.1.0'
