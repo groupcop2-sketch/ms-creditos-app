@@ -69,7 +69,11 @@ export async function getJumioOAuthToken() {
 export async function iniciarVerificacionJumio(creditoId, clienteId) {
     await ensureJumioTable();
     // Fetch applicant information from the credit row
-    const creditoRes = await pool.query(`select id_credito, consecutivo, v_nombre_completo, v_num_identificacion, v_correo, v_telefono
+    const creditoRes = await pool.query(`select id_credito, consecutivo,
+      coalesce(v_nombre_cliente, '') as v_nombre_completo,
+      coalesce(v_identificacion_cliente, '') as v_num_identificacion,
+      coalesce(v_correo_cliente, '') as v_correo,
+      coalesce(v_telefono_cliente, '') as v_telefono
      from "Creditos"."TBL_CREDITOS"
      where id_credito = $1
      limit 1`, [creditoId]);
@@ -78,69 +82,65 @@ export async function iniciarVerificacionJumio(creditoId, clienteId) {
     }
     const credito = creditoRes.rows[0];
     const customerInternalReference = `SOL_CR_${creditoId}_${Date.now()}`;
-    const shouldUseRealJumio = !env.JUMIO_SIMULATION_MODE &&
-        Boolean(env.JUMIO_CLIENT_ID?.trim()) &&
+    const shouldUseRealJumio = Boolean(env.JUMIO_CLIENT_ID?.trim()) &&
         Boolean(env.JUMIO_CLIENT_SECRET?.trim());
     let accountId;
     let workflowExecutionId;
     let webHref;
     let sdkToken;
-    const isSimulation = !shouldUseRealJumio;
-    if (shouldUseRealJumio) {
-        try {
-            const accessToken = await getJumioOAuthToken();
-            const datacenter = env.JUMIO_DATACENTER || 'us';
-            const accountsUrl = `https://content.${datacenter}.jumio.ai/api/v1/accounts`;
-            const nameParts = (credito.v_nombre_completo || '').trim().split(/\s+/);
-            const firstName = nameParts[0] || 'Cliente';
-            const lastName = nameParts.slice(1).join(' ') || 'Solicitante';
-            const payload = {
-                customerInternalReference,
-                workflowDefinition: {
-                    key: 10001
-                },
-                user: {
-                    firstName,
-                    lastName,
-                    email: credito.v_correo || undefined,
-                    phone: credito.v_telefono || undefined
-                },
-                callbackUrl: `${env.APP_PUBLIC_URL || 'http://localhost:4000'}/api/v1/portal/jumio/callback`,
-                successUrl: `${env.JUMIO_SUCCESS_URL}?creditoId=${creditoId}&ref=${customerInternalReference}`,
-                errorUrl: `${env.JUMIO_ERROR_URL}?creditoId=${creditoId}&ref=${customerInternalReference}`
-            };
-            const res = await fetch(accountsUrl, {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${accessToken}`,
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(payload)
-            });
-            if (!res.ok) {
-                const errText = await res.text();
-                throw new Error(`Jumio accounts error (${res.status}): ${errText}`);
-            }
-            const resData = (await res.json());
-            accountId = resData.account?.id || `acc_${Date.now()}`;
-            workflowExecutionId = resData.workflowExecution?.id || `wf_${Date.now()}`;
-            webHref = resData.web?.href || '';
-            sdkToken = resData.sdk?.token || '';
+    if (!shouldUseRealJumio) {
+        throw new SecurityError('Credenciales de Jumio no configuradas. Por favor ingresa JUMIO_CLIENT_ID y JUMIO_CLIENT_SECRET en tu archivo .env y en las variables de entorno de Vercel.', 400);
+    }
+    try {
+        const accessToken = await getJumioOAuthToken();
+        const datacenter = env.JUMIO_DATACENTER || 'us';
+        const accountsUrl = `https://content.${datacenter}.jumio.ai/api/v1/accounts`;
+        const nameParts = (credito.v_nombre_completo || '').trim().split(/\s+/);
+        const firstName = nameParts[0] || 'Cliente';
+        const lastName = nameParts.slice(1).join(' ') || 'Solicitante';
+        const callbackBase = env.APP_PUBLIC_URL?.startsWith('http')
+            ? env.APP_PUBLIC_URL
+            : 'https://ms-creditos-app-weld.vercel.app';
+        const payload = {
+            customerInternalReference,
+            workflowDefinition: {
+                key: 10001
+            },
+            user: {
+                firstName,
+                lastName,
+                email: credito.v_correo || undefined,
+                phone: credito.v_telefono || undefined
+            },
+            callbackUrl: `${callbackBase}/api/v1/portal/jumio/callback`,
+            successUrl: `${env.JUMIO_SUCCESS_URL}?creditoId=${creditoId}&ref=${customerInternalReference}`,
+            errorUrl: `${env.JUMIO_ERROR_URL}?creditoId=${creditoId}&ref=${customerInternalReference}`
+        };
+        const res = await fetch(accountsUrl, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(payload)
+        });
+        if (!res.ok) {
+            const errText = await res.text();
+            throw new Error(`Respuesta Jumio (${res.status}): ${errText}`);
         }
-        catch (err) {
-            console.warn('Fallo llamada a API real de Jumio, recurriendo a modo simulación:', err.message);
-            accountId = `acc_mock_${Date.now().toString(36)}`;
-            workflowExecutionId = `wf_mock_${Date.now().toString(36)}`;
-            webHref = `http://localhost:5174/?jumio=mock&creditoId=${creditoId}&ref=${customerInternalReference}`;
-            sdkToken = `sdk_mock_${Date.now().toString(36)}`;
+        const resData = (await res.json());
+        accountId = resData.account?.id || `acc_${Date.now()}`;
+        workflowExecutionId = resData.workflowExecution?.id || `wf_${Date.now()}`;
+        webHref = resData.web?.href || '';
+        sdkToken = resData.sdk?.token || '';
+        if (!webHref) {
+            throw new Error('Jumio no devolvió una URL web de verificación (web.href no presente en la respuesta)');
         }
     }
-    else {
-        // Mode Simulation (Fully functional for testing, sandboxing, and UI walkthroughs)
-        accountId = `acc_jumio_mock_${Date.now().toString(36)}`;
-        workflowExecutionId = `wf_jumio_mock_${Date.now().toString(36)}`;
-        webHref = `http://localhost:5174/?jumio=mock&creditoId=${creditoId}&ref=${customerInternalReference}`;
-        sdkToken = `sdk_token_mock_${Date.now().toString(36)}`;
+    catch (err) {
+        if (err instanceof SecurityError)
+            throw err;
+        throw new SecurityError(`Error al inicializar sesión en Jumio: ${err.message}`, 502);
     }
     // Insert or update verification in DB
     const insertRes = await pool.query(`insert into "Creditos"."TBL_JUMIO_VERIFICACIONES" (
@@ -165,7 +165,7 @@ export async function iniciarVerificacionJumio(creditoId, clienteId) {
         webHref,
         sdkToken,
         estado: 'PENDIENTE',
-        isSimulation
+        isSimulation: false
     };
 }
 /**
