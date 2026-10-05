@@ -390,7 +390,14 @@ export async function listPortalCreditos(clienteId) {
       c.val_monto_solicitado as monto, c.num_plazo as plazo,
       c.val_cuota_estimada as cuota,
       coalesce(c.v_estado_solicitud, 'SOLICITADO') as estado,
-      c.fec_radicacion as fecha
+      c.fec_radicacion as fecha,
+      (
+        select jv.estado
+        from "Creditos"."TBL_JUMIO_VERIFICACIONES" jv
+        where jv.id_credito = c.id_credito
+        order by jv.fec_creacion desc
+        limit 1
+      ) as jumio_estado
      from "Creditos"."TBL_CREDITOS" c
      inner join "Creditos"."TBL_PRODUCTOS_CREDITO" p on p.id_producto_credito = c.id_producto_credito
      where c.v_identificacion_cliente = $1
@@ -403,6 +410,7 @@ export async function listPortalCreditos(clienteId) {
         plazo: row.plazo,
         cuota: row.cuota ? Number(row.cuota) : null,
         estado: row.estado,
+        jumioEstado: row.jumio_estado || 'NO_INICIADA',
         fecha: row.fecha
     }));
     const normalized = (value) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toUpperCase();

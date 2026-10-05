@@ -363,6 +363,13 @@ export async function procesarJumioWebhook(payload: any) {
   // If passed, record note in credit history and advance credit
   if (decision === 'PASSED') {
     await pool.query(
+      `update "Creditos"."TBL_CREDITOS"
+       set v_estado_solicitud = 'EN_ESTUDIO', fec_actualizacion = now()
+       where id_credito = $1`,
+      [verif.id_credito]
+    );
+
+    await pool.query(
       `insert into "Creditos"."TBL_CREDITO_HISTORIAL" (
         id_credito, evento, estado_anterior, estado_nuevo, descripcion, id_usuario
       ) values ($1, 'VALIDACION_BIOMETRICA', 'VALIDACION', 'ESTUDIO', $2, 1)`,

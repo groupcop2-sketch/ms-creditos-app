@@ -568,12 +568,20 @@ export async function listPortalCreditos(clienteId: number) {
     cuota: string | null;
     estado: string;
     fecha: Date;
+    jumio_estado: string | null;
   }>(
     `select c.id_credito, c.consecutivo, p.nombre as producto,
       c.val_monto_solicitado as monto, c.num_plazo as plazo,
       c.val_cuota_estimada as cuota,
       coalesce(c.v_estado_solicitud, 'SOLICITADO') as estado,
-      c.fec_radicacion as fecha
+      c.fec_radicacion as fecha,
+      (
+        select jv.estado
+        from "Creditos"."TBL_JUMIO_VERIFICACIONES" jv
+        where jv.id_credito = c.id_credito
+        order by jv.fec_creacion desc
+        limit 1
+      ) as jumio_estado
      from "Creditos"."TBL_CREDITOS" c
      inner join "Creditos"."TBL_PRODUCTOS_CREDITO" p on p.id_producto_credito = c.id_producto_credito
      where c.v_identificacion_cliente = $1
@@ -589,6 +597,7 @@ export async function listPortalCreditos(clienteId: number) {
     plazo: row.plazo,
     cuota: row.cuota ? Number(row.cuota) : null,
     estado: row.estado,
+    jumioEstado: row.jumio_estado || 'NO_INICIADA',
     fecha: row.fecha
   }));
   const normalized = (value: string) =>
