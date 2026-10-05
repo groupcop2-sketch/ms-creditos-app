@@ -44,7 +44,8 @@ const libranzeraSchema = z.object({
 });
 
 const comercialSchema = z.object({
-  idLibranzera: z.coerce.number().int().positive(),
+  idLibranzera: z.coerce.number().int().positive().nullable().optional(),
+  idFinanciera: z.coerce.number().int().positive().nullable().optional(),
   identificacion: z.string().min(1),
   primerNombre: z.string().min(1),
   segundoNombre: z.string().trim().nullable().optional(),
