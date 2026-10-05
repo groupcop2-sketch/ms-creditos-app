@@ -43,7 +43,7 @@ async function main() {
     app.log.error(error);
     const internalMessage = error instanceof Error ? error.message : 'Error interno del servidor';
     return reply.code(500).send({
-      message: process.env.NODE_ENV === 'production' ? 'Error interno del servidor' : internalMessage
+      message: internalMessage
     });
   });
 

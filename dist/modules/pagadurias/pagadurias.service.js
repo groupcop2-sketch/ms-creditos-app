@@ -233,19 +233,21 @@ export async function listAddressCatalogs() {
 }
 export async function listEmployeeCatalogs() {
     return withClient(async (client) => {
-        const [tiposContrato, bancos, tiposCuenta, estadosCivil, tiposVivienda] = await Promise.all([
+        const [tiposContrato, bancos, tiposCuenta, estadosCivil, tiposVivienda, cargos] = await Promise.all([
             client.query('select id_tipo_contrato as id, des_tipo_contrato as nombre from "Creditos"."TBL_TIPO_CONTRATO" order by des_tipo_contrato'),
             client.query('select id_banco as id, des_banco as nombre from "Creditos"."TBL_BANCOS" order by des_banco'),
             client.query('select id_tipo_cuenta as id, des_tipo_cuenta as nombre from "Creditos"."TBL_TIPO_CUENTAS" order by des_tipo_cuenta'),
             client.query('select id_estado_civil as id, des_estado_civil as nombre from "Creditos"."TBL_ESTADO_CIVIL" order by des_estado_civil'),
-            client.query('select id_tipo_vivienda as id, des_tipo_vivienda as nombre from "Creditos"."TBL_TIPO_VIVIENDA" order by des_tipo_vivienda')
+            client.query('select id_tipo_vivienda as id, des_tipo_vivienda as nombre from "Creditos"."TBL_TIPO_VIVIENDA" order by des_tipo_vivienda'),
+            client.query('select id_cargo as id, des_cargo as nombre from "Creditos"."TBL_CARGOS" where id_estado is null or id_estado = 1 order by des_cargo').catch(() => ({ rows: [] }))
         ]);
         return {
             tiposContrato: tiposContrato.rows,
             bancos: bancos.rows,
             tiposCuenta: tiposCuenta.rows,
             estadosCivil: estadosCivil.rows,
-            tiposVivienda: tiposVivienda.rows
+            tiposVivienda: tiposVivienda.rows,
+            cargos: cargos.rows
         };
     });
 }

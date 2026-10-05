@@ -10,7 +10,14 @@ const registerSchema = z.object({
     correo: z.string().trim().email(),
     telefono: z.string().trim().nullable().optional(),
     password: z.string().min(8),
-    idTipoIdentificacion: z.coerce.number().int().positive().nullable().optional()
+    idTipoIdentificacion: z.coerce.number().int().positive().nullable().optional(),
+    codigoEmpresa: z.string().trim().nullable().optional(),
+    cargo: z.string().trim().nullable().optional(),
+    idTipoContrato: z.coerce.number().int().positive().nullable().optional(),
+    fechaIngreso: z.string().trim().nullable().optional(),
+    salario: z.coerce.number().positive().nullable().optional(),
+    neto: z.coerce.number().nonnegative().nullable().optional(),
+    tieneEmbargos: z.boolean().nullable().optional()
 });
 const laborProfileSchema = z.object({
     codigoEmpresa: z.string().trim().min(1),
