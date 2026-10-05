@@ -47,8 +47,11 @@ const cargarDocumentosSchema = z.object({
 
 export async function jumioRoutes(app: FastifyInstance) {
   // Consultar configuración disponible de biometría (Jumio vs Carga Manual)
-  app.get('/config', async () => {
-    return obtenerConfiguracionJumio();
+  app.get('/config', async (request) => {
+    const query = request.query as { creditoId?: string; idFinanciera?: string } | undefined;
+    const creditoId = query?.creditoId ? Number(query.creditoId) : undefined;
+    const idFinanciera = query?.idFinanciera ? Number(query.idFinanciera) : undefined;
+    return obtenerConfiguracionJumio(creditoId, idFinanciera);
   });
 
   // Iniciar verificación biométrica Jumio para un crédito

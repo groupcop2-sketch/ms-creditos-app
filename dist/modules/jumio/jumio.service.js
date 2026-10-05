@@ -1,6 +1,7 @@
 import { pool } from '../../lib/db.js';
 import { env } from '../../config/env.js';
 import { SecurityError } from '../security/security.service.js';
+import { verificarIntegracionActiva } from '../financieras/financieras.service.js';
 // Memory cache for Jumio OAuth Bearer Token
 let cachedOAuthToken = null;
 export async function ensureJumioTable() {
@@ -33,17 +34,20 @@ export async function ensureJumioTable() {
 /**
  * Obtains OAuth Access Token from Jumio /oauth2/token
  */
-export async function getJumioOAuthToken() {
+export async function getJumioOAuthToken(customClientId, customClientSecret, customDatacenter) {
+    const cId = customClientId || env.JUMIO_CLIENT_ID;
+    const cSec = customClientSecret || env.JUMIO_CLIENT_SECRET;
+    const datacenter = customDatacenter || env.JUMIO_DATACENTER || 'us';
+    if (!cId || !cSec) {
+        throw new SecurityError('Credenciales de Jumio no configuradas para esta financiera en TBL_INTEGRACIONES_FINANCIERA', 500);
+    }
+    const cacheKey = `${cId}:${datacenter}`;
     const now = Date.now();
-    if (cachedOAuthToken && cachedOAuthToken.expiresAt > now + 60000) {
+    if (cachedOAuthToken && cachedOAuthToken.key === cacheKey && cachedOAuthToken.expiresAt > now + 60000) {
         return cachedOAuthToken.token;
     }
-    if (!env.JUMIO_CLIENT_ID || !env.JUMIO_CLIENT_SECRET) {
-        throw new SecurityError('Credenciales de Jumio (JUMIO_CLIENT_ID / JUMIO_CLIENT_SECRET) no configuradas', 500);
-    }
-    const datacenter = env.JUMIO_DATACENTER || 'us';
     const tokenUrl = `https://auth.${datacenter}.jumio.ai/oauth2/token`;
-    const credentials = Buffer.from(`${env.JUMIO_CLIENT_ID}:${env.JUMIO_CLIENT_SECRET}`).toString('base64');
+    const credentials = Buffer.from(`${cId}:${cSec}`).toString('base64');
     const response = await fetch(tokenUrl, {
         method: 'POST',
         headers: {
@@ -59,7 +63,8 @@ export async function getJumioOAuthToken() {
     const data = (await response.json());
     cachedOAuthToken = {
         token: data.access_token,
-        expiresAt: now + (data.expires_in || 3600) * 1000
+        expiresAt: now + (data.expires_in || 3600) * 1000,
+        key: cacheKey
     };
     return cachedOAuthToken.token;
 }
@@ -82,18 +87,20 @@ export async function iniciarVerificacionJumio(creditoId, clienteId) {
     }
     const credito = creditoRes.rows[0];
     const customerInternalReference = `SOL_CR_${creditoId}_${Date.now()}`;
-    const shouldUseRealJumio = Boolean(env.JUMIO_CLIENT_ID?.trim()) &&
-        Boolean(env.JUMIO_CLIENT_SECRET?.trim());
+    // Validate against TBL_INTEGRACIONES_FINANCIERA for JUMIO
+    const integracionStatus = await verificarIntegracionActiva('JUMIO', creditoId);
+    if (!integracionStatus.activa) {
+        throw new SecurityError(`La integración con Jumio no se encuentra activa o configurada para la financiera '${integracionStatus.nombreFinanciera}'. Por favor realiza la validación mediante la carga manual de documentos.`, 400);
+    }
+    const clientId = integracionStatus.clientId || env.JUMIO_CLIENT_ID;
+    const clientSecret = integracionStatus.clientSecret || env.JUMIO_CLIENT_SECRET;
+    const datacenter = (integracionStatus.ambiente === 'SANDBOX' ? 'us' : env.JUMIO_DATACENTER) || 'us';
     let accountId;
     let workflowExecutionId;
     let webHref;
     let sdkToken;
-    if (!shouldUseRealJumio) {
-        throw new SecurityError('Credenciales de Jumio no configuradas. Por favor ingresa JUMIO_CLIENT_ID y JUMIO_CLIENT_SECRET en tu archivo .env y en las variables de entorno de Vercel.', 400);
-    }
     try {
-        const accessToken = await getJumioOAuthToken();
-        const datacenter = env.JUMIO_DATACENTER || 'us';
+        const accessToken = await getJumioOAuthToken(clientId, clientSecret, datacenter);
         const accountsUrl = `https://content.${datacenter}.jumio.ai/api/v1/accounts`;
         const nameParts = (credito.v_nombre_completo || '').trim().split(/\s+/);
         const firstName = nameParts[0] || 'Cliente';
@@ -336,20 +343,17 @@ export async function simularCompletarVerificacion(creditoId, decision = 'PASSED
     return procesarJumioWebhook(mockPayload);
 }
 /**
- * Checks whether Jumio credentials are configured in the environment
+ * Returns Jumio feature configuration & availability validating against TBL_INTEGRACIONES_FINANCIERA
  */
-export function esJumioConfigurado() {
-    return Boolean(env.JUMIO_CLIENT_ID?.trim()) && Boolean(env.JUMIO_CLIENT_SECRET?.trim());
-}
-/**
- * Returns Jumio feature configuration & availability
- */
-export function obtenerConfiguracionJumio() {
-    const configurado = esJumioConfigurado();
+export async function obtenerConfiguracionJumio(creditoId, idFinanciera) {
+    const status = await verificarIntegracionActiva('JUMIO', creditoId, idFinanciera);
+    const datacenter = (status.ambiente === 'SANDBOX' ? 'us' : env.JUMIO_DATACENTER) || 'us';
     return {
-        jumioConfigurado: configurado,
-        datacenter: env.JUMIO_DATACENTER || 'us',
-        permiteCargaManual: true
+        jumioConfigurado: status.activa,
+        datacenter,
+        permiteCargaManual: true,
+        idFinanciera: status.idFinanciera,
+        nombreFinanciera: status.nombreFinanciera
     };
 }
 /**
