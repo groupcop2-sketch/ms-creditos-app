@@ -514,14 +514,12 @@ export async function guardarDocumentosManuales(input: GuardarDocumentosManuales
     v_num_identificacion: string;
     v_correo: string;
     v_telefono: string;
-    id_cliente: number | null;
   }>(
     `select id_credito, consecutivo,
       coalesce(v_nombre_cliente, '') as v_nombre_completo,
       coalesce(v_identificacion_cliente, '') as v_num_identificacion,
       coalesce(v_correo_cliente, '') as v_correo,
-      coalesce(v_telefono_cliente, '') as v_telefono,
-      id_cliente
+      coalesce(v_telefono_cliente, '') as v_telefono
      from "Creditos"."TBL_CREDITOS"
      where id_credito = $1
      limit 1`,
@@ -584,7 +582,7 @@ export async function guardarDocumentosManuales(input: GuardarDocumentosManuales
       returning id_jumio_verificacion`,
       [
         creditoId,
-        clienteId || credito.id_cliente || null,
+        clienteId || null,
         internalRef,
         `MANUAL_${Date.now()}`,
         `WF_MANUAL_${Date.now()}`,
