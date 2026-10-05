@@ -134,10 +134,7 @@ export async function portalRoutes(app: FastifyInstance) {
     return completePortalLaborProfile(user.clienteId, body);
   });
 
-  app.get('/productos', { preHandler: [authenticatePortal] }, async (request) => {
-    const user = request.user as unknown as PortalJwtPayload;
-    const cliente = await getPortalClientById(user.clienteId);
-    if (!cliente.perfilCompleto) return [];
+  app.get('/productos', async () => {
     return listPortalProductosCredito();
   });
 

@@ -99,11 +99,7 @@ export async function portalRoutes(app) {
         const body = laborProfileSchema.parse(request.body);
         return completePortalLaborProfile(user.clienteId, body);
     });
-    app.get('/productos', { preHandler: [authenticatePortal] }, async (request) => {
-        const user = request.user;
-        const cliente = await getPortalClientById(user.clienteId);
-        if (!cliente.perfilCompleto)
-            return [];
+    app.get('/productos', async () => {
         return listPortalProductosCredito();
     });
     app.get('/creditos', { preHandler: [authenticatePortal] }, async (request) => {
