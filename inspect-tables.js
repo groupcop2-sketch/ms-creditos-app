@@ -15,11 +15,14 @@ async function main() {
   await client.connect();
   console.log('Connected to DB');
 
-  const jumio = await client.query(`
-    select * from "Creditos"."TBL_JUMIO_VERIFICACIONES"
+  const clients = await client.query(`
+    select id_cliente, v_num_identificacion, v_nombre_completo, v_correo, fec_creacion
+    from "Creditos"."TBL_CLIENTES_PORTAL"
+    order by id_cliente desc
     limit 5
   `);
-  console.log('Jumio query result:', jumio.rows);
+  console.log('Clientes:');
+  console.table(clients.rows);
 
   await client.end();
 }
