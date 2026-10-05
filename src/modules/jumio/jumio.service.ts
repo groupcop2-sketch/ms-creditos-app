@@ -369,15 +369,19 @@ export async function procesarJumioWebhook(payload: any) {
       [verif.id_credito]
     );
 
-    await pool.query(
-      `insert into "Creditos"."TBL_CREDITO_HISTORIAL" (
-        id_credito, evento, estado_anterior, estado_nuevo, descripcion, id_usuario
-      ) values ($1, 'VALIDACION_BIOMETRICA', 'VALIDACION', 'ESTUDIO', $2, 1)`,
-      [
-        verif.id_credito,
-        `Validación biométrica Jumio APROBADA (Similitud facial: ${facialSimilarity || 98.5}%, Prueba de vida: OK, Doc: ${ocrData.idNumber || 'Verificado'})`
-      ]
-    );
+    try {
+      await pool.query(
+        `insert into "Creditos"."TBL_CREDITO_HISTORIAL" (
+          id_credito, accion, estado_anterior, estado_nuevo, observacion, id_usuario
+        ) values ($1, 'VALIDACION_BIOMETRICA', 'VALIDACION', 'ESTUDIO', $2, null)`,
+        [
+          verif.id_credito,
+          `Validación biométrica Jumio APROBADA (Similitud facial: ${facialSimilarity || 98.5}%, Prueba de vida: OK, Doc: ${ocrData.idNumber || 'Verificado'})`
+        ]
+      );
+    } catch (histErr: any) {
+      console.warn('No se pudo registrar historial del credito:', histErr.message);
+    }
   }
 
   return {
@@ -601,15 +605,19 @@ export async function guardarDocumentosManuales(input: GuardarDocumentosManuales
   );
 
   // Add historical log
-  await pool.query(
-    `insert into "Creditos"."TBL_CREDITO_HISTORIAL" (
-      id_credito, evento, estado_anterior, estado_nuevo, descripcion, id_usuario
-    ) values ($1, 'VALIDACION_BIOMETRICA_MANUAL', 'VALIDACION', 'ESTUDIO', $2, 1)`,
-    [
-      creditoId,
-      'Carga manual de documento de identidad y fotografía del rostro completada por el cliente. Solicitud avanzada a estudio de crédito.'
-    ]
-  );
+  try {
+    await pool.query(
+      `insert into "Creditos"."TBL_CREDITO_HISTORIAL" (
+        id_credito, accion, estado_anterior, estado_nuevo, observacion, id_usuario
+      ) values ($1, 'VALIDACION_BIOMETRICA_MANUAL', 'VALIDACION', 'ESTUDIO', $2, null)`,
+      [
+        creditoId,
+        'Carga manual de documento de identidad y fotografía del rostro completada por el cliente. Solicitud avanzada a estudio de crédito.'
+      ]
+    );
+  } catch (histErr: any) {
+    console.warn('No se pudo registrar historial del credito:', histErr.message);
+  }
 
   return {
     success: true,
