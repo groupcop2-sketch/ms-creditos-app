@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { iniciarVerificacionJumio, obtenerEstadoVerificacionJumio, procesarJumioWebhook, simularCompletarVerificacion } from './jumio.service.js';
+import { iniciarVerificacionJumio, obtenerEstadoVerificacionJumio, procesarJumioWebhook, simularCompletarVerificacion, obtenerConfiguracionJumio, guardarDocumentosManuales } from './jumio.service.js';
 async function authenticatePortal(request, reply) {
     try {
         await request.jwtVerify();
@@ -19,7 +19,20 @@ const simularSchema = z.object({
     creditoId: z.coerce.number().int().positive(),
     decision: z.enum(['PASSED', 'REJECTED']).default('PASSED')
 });
+const cargarDocumentosSchema = z.object({
+    creditoId: z.coerce.number().int().positive(),
+    documentoFrente: z.string().min(1, 'La imagen frontal del documento es requerida'),
+    documentoReverso: z.string().optional().nullable(),
+    fotoRostro: z.string().min(1, 'La fotografía del rostro es requerida'),
+    tipoDocumento: z.string().optional().nullable(),
+    numeroDocumento: z.string().optional().nullable(),
+    observaciones: z.string().optional().nullable()
+});
 export async function jumioRoutes(app) {
+    // Consultar configuración disponible de biometría (Jumio vs Carga Manual)
+    app.get('/config', async () => {
+        return obtenerConfiguracionJumio();
+    });
     // Iniciar verificación biométrica Jumio para un crédito
     app.post('/iniciar', { preHandler: [authenticatePortal] }, async (request) => {
         const user = request.user;
@@ -30,6 +43,15 @@ export async function jumioRoutes(app) {
     app.get('/estado/:creditoId', { preHandler: [authenticatePortal] }, async (request) => {
         const params = z.object({ creditoId: z.coerce.number().int().positive() }).parse(request.params);
         return obtenerEstadoVerificacionJumio(params.creditoId);
+    });
+    // Carga manual de documento de identidad y foto del rostro (alternativa directa sin Jumio)
+    app.post('/cargar-documentos', { preHandler: [authenticatePortal] }, async (request) => {
+        const user = request.user;
+        const body = cargarDocumentosSchema.parse(request.body);
+        return guardarDocumentosManuales({
+            ...body,
+            clienteId: user.clienteId
+        });
     });
     // Webhook oficial de Jumio (público / autenticado vía header)
     app.post('/callback', async (request, reply) => {

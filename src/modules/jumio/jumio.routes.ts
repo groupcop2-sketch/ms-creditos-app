@@ -4,7 +4,9 @@ import {
   iniciarVerificacionJumio,
   obtenerEstadoVerificacionJumio,
   procesarJumioWebhook,
-  simularCompletarVerificacion
+  simularCompletarVerificacion,
+  obtenerConfiguracionJumio,
+  guardarDocumentosManuales
 } from './jumio.service.js';
 
 type PortalJwtPayload = {
@@ -33,7 +35,22 @@ const simularSchema = z.object({
   decision: z.enum(['PASSED', 'REJECTED']).default('PASSED')
 });
 
+const cargarDocumentosSchema = z.object({
+  creditoId: z.coerce.number().int().positive(),
+  documentoFrente: z.string().min(1, 'La imagen frontal del documento es requerida'),
+  documentoReverso: z.string().optional().nullable(),
+  fotoRostro: z.string().min(1, 'La fotografía del rostro es requerida'),
+  tipoDocumento: z.string().optional().nullable(),
+  numeroDocumento: z.string().optional().nullable(),
+  observaciones: z.string().optional().nullable()
+});
+
 export async function jumioRoutes(app: FastifyInstance) {
+  // Consultar configuración disponible de biometría (Jumio vs Carga Manual)
+  app.get('/config', async () => {
+    return obtenerConfiguracionJumio();
+  });
+
   // Iniciar verificación biométrica Jumio para un crédito
   app.post('/iniciar', { preHandler: [authenticatePortal] }, async (request) => {
     const user = request.user as unknown as PortalJwtPayload;
@@ -45,6 +62,16 @@ export async function jumioRoutes(app: FastifyInstance) {
   app.get('/estado/:creditoId', { preHandler: [authenticatePortal] }, async (request) => {
     const params = z.object({ creditoId: z.coerce.number().int().positive() }).parse(request.params);
     return obtenerEstadoVerificacionJumio(params.creditoId);
+  });
+
+  // Carga manual de documento de identidad y foto del rostro (alternativa directa sin Jumio)
+  app.post('/cargar-documentos', { preHandler: [authenticatePortal] }, async (request) => {
+    const user = request.user as unknown as PortalJwtPayload;
+    const body = cargarDocumentosSchema.parse(request.body);
+    return guardarDocumentosManuales({
+      ...body,
+      clienteId: user.clienteId
+    });
   });
 
   // Webhook oficial de Jumio (público / autenticado vía header)
@@ -60,3 +87,4 @@ export async function jumioRoutes(app: FastifyInstance) {
     return simularCompletarVerificacion(body.creditoId, body.decision);
   });
 }
+

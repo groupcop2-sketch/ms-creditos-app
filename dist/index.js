@@ -25,7 +25,10 @@ import { firmasRoutes } from './modules/firmas/firmas.routes.js';
 import { docusignRoutes } from './modules/firmas/docusign.routes.js';
 import { jumioRoutes } from './modules/jumio/jumio.routes.js';
 async function main() {
-    const app = Fastify({ logger: true });
+    const app = Fastify({
+        logger: true,
+        bodyLimit: 30 * 1024 * 1024 // 30MB for document & selfie image uploads
+    });
     app.setErrorHandler((error, request, reply) => {
         if (error instanceof SecurityError) {
             return reply.code(error.statusCode).send({ message: error.message });

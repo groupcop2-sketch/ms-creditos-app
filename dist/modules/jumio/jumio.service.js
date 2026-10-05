@@ -330,3 +330,109 @@ export async function simularCompletarVerificacion(creditoId, decision = 'PASSED
     };
     return procesarJumioWebhook(mockPayload);
 }
+/**
+ * Checks whether Jumio credentials are configured in the environment
+ */
+export function esJumioConfigurado() {
+    return Boolean(env.JUMIO_CLIENT_ID?.trim()) && Boolean(env.JUMIO_CLIENT_SECRET?.trim());
+}
+/**
+ * Returns Jumio feature configuration & availability
+ */
+export function obtenerConfiguracionJumio() {
+    const configurado = esJumioConfigurado();
+    return {
+        jumioConfigurado: configurado,
+        datacenter: env.JUMIO_DATACENTER || 'us',
+        permiteCargaManual: true
+    };
+}
+/**
+ * Stores manually uploaded identification documents and facial photo,
+ * advancing the credit to stage 3 ('EN_ESTUDIO').
+ */
+export async function guardarDocumentosManuales(input) {
+    await ensureJumioTable();
+    const { creditoId, clienteId, documentoFrente, documentoReverso, fotoRostro, tipoDocumento, numeroDocumento, observaciones } = input;
+    // Validate credit exists
+    const creditoRes = await pool.query(`select id_credito, consecutivo,
+      coalesce(v_nombre_cliente, '') as v_nombre_completo,
+      coalesce(v_identificacion_cliente, '') as v_num_identificacion,
+      coalesce(v_correo_cliente, '') as v_correo,
+      coalesce(v_telefono_cliente, '') as v_telefono,
+      id_cliente
+     from "Creditos"."TBL_CREDITOS"
+     where id_credito = $1
+     limit 1`, [creditoId]);
+    if (!creditoRes.rowCount) {
+        throw new SecurityError(`Crédito con ID ${creditoId} no encontrado`, 404);
+    }
+    const credito = creditoRes.rows[0];
+    const internalRef = `DOC_MANUAL_${creditoId}_${Date.now()}`;
+    const now = new Date();
+    const datosDocumento = {
+        metodo: 'CARGA_MANUAL',
+        tipoDocumento: tipoDocumento || 'CEDULA_CIUDADANIA',
+        numeroDocumento: numeroDocumento || credito.v_num_identificacion,
+        documentoFrente,
+        documentoReverso: documentoReverso || null,
+        fotoRostro,
+        observaciones: observaciones || null,
+        fechaCarga: now.toISOString(),
+        tamanoFrenteBytes: documentoFrente.length,
+        tamanoReversoBytes: documentoReverso ? documentoReverso.length : 0,
+        tamanoRostroBytes: fotoRostro.length
+    };
+    // Upsert or insert into TBL_JUMIO_VERIFICACIONES
+    const existingRes = await pool.query(`select id_jumio_verificacion
+     from "Creditos"."TBL_JUMIO_VERIFICACIONES"
+     where id_credito = $1
+     order by fec_creacion desc
+     limit 1`, [creditoId]);
+    let idVerificacion;
+    if (existingRes.rowCount) {
+        idVerificacion = existingRes.rows[0].id_jumio_verificacion;
+        await pool.query(`update "Creditos"."TBL_JUMIO_VERIFICACIONES"
+       set estado = 'APROBADO',
+           decision = 'PASSED',
+           score_similitud_facial = 100,
+           prueba_vida_exitosa = true,
+           datos_documento = $1,
+           fec_actualizacion = now()
+       where id_jumio_verificacion = $2`, [JSON.stringify(datosDocumento), idVerificacion]);
+    }
+    else {
+        const insertRes = await pool.query(`insert into "Creditos"."TBL_JUMIO_VERIFICACIONES" (
+        id_credito, id_cliente, customer_internal_reference, account_id, workflow_execution_id,
+        estado, decision, score_similitud_facial, prueba_vida_exitosa, datos_documento
+      ) values ($1, $2, $3, $4, $5, 'APROBADO', 'PASSED', 100, true, $6)
+      returning id_jumio_verificacion`, [
+            creditoId,
+            clienteId || credito.id_cliente || null,
+            internalRef,
+            `MANUAL_${Date.now()}`,
+            `WF_MANUAL_${Date.now()}`,
+            JSON.stringify(datosDocumento)
+        ]);
+        idVerificacion = insertRes.rows[0].id_jumio_verificacion;
+    }
+    // Advance credit to EN_ESTUDIO
+    await pool.query(`update "Creditos"."TBL_CREDITOS"
+     set v_estado_solicitud = 'EN_ESTUDIO', fec_actualizacion = now()
+     where id_credito = $1`, [creditoId]);
+    // Add historical log
+    await pool.query(`insert into "Creditos"."TBL_CREDITO_HISTORIAL" (
+      id_credito, evento, estado_anterior, estado_nuevo, descripcion, id_usuario
+    ) values ($1, 'VALIDACION_BIOMETRICA_MANUAL', 'VALIDACION', 'ESTUDIO', $2, 1)`, [
+        creditoId,
+        'Carga manual de documento de identidad y fotografía del rostro completada por el cliente. Solicitud avanzada a estudio de crédito.'
+    ]);
+    return {
+        success: true,
+        message: 'Documentos e identidad facial registrados correctamente. Tu solicitud ha pasado a estudio de crédito.',
+        idVerificacion,
+        creditoId,
+        estado: 'APROBADO',
+        decision: 'PASSED'
+    };
+}
