@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { pool } from '../../lib/db.js';
 import { SecurityError } from '../security/security.service.js';
+import { uploadBufferToS3, createS3FolderIfNotExists, sanitizeFolderName } from '../storage/s3.service.js';
 async function withClient(runner) {
     const client = await pool.connect();
     try {
@@ -2630,11 +2631,33 @@ export async function uploadCreditoDocumento(documentoId, input) {
                 input.usuarioId ?? null,
                 input.observacion?.trim() || null
             ]);
+            // Obtener el número del crédito (consecutivo) para la carpeta de S3
+            const credRes = await client.query(`select consecutivo from "Creditos"."TBL_CREDITOS" where id_credito = $1 limit 1`, [row.id_credito]);
+            const numeroCredito = (credRes.rows[0]?.consecutivo || `CR-${row.id_credito}`);
+            const carpetaCredito = sanitizeFolderName(numeroCredito);
+            let archivoUrl = `db:${hash}`;
+            try {
+                await createS3FolderIfNotExists(carpetaCredito);
+                const s3Upload = await uploadBufferToS3({
+                    buffer: input.content,
+                    folder: carpetaCredito,
+                    fileName: input.fileName,
+                    contentType: input.mimeType,
+                    creditoId: row.id_credito,
+                    metadata: { 'tipo-documento': row.documento }
+                });
+                if (s3Upload?.url) {
+                    archivoUrl = s3Upload.url;
+                }
+            }
+            catch (s3Err) {
+                console.warn('Advertencia al respaldar documento en S3:', s3Err.message);
+            }
             await client.query(`update "Creditos"."TBL_CREDITO_DOCUMENTOS"
          set estado_documento = 'CARGADO',
              v_archivo_url = $1,
              fec_actualizacion = now()
-         where id_credito_documento = $2`, [`db:${hash}`, documentoId]);
+         where id_credito_documento = $2`, [archivoUrl, documentoId]);
             await addCreditoHistory(client, row.id_credito, null, 'DOCUMENTO_CARGADO', row.estado_documento, 'CARGADO', input.observacion?.trim() || `${row.documento}: ${input.fileName}`, input.usuarioId);
             await client.query('commit');
             return getCreditoExpediente(row.id_credito);

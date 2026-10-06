@@ -2,6 +2,11 @@ import crypto from 'node:crypto';
 import type { ClientLike } from '../../lib/db.js';
 import { pool } from '../../lib/db.js';
 import { SecurityError } from '../security/security.service.js';
+import {
+  uploadBufferToS3,
+  createS3FolderIfNotExists,
+  sanitizeFolderName
+} from '../storage/s3.service.js';
 
 interface CatalogRow {
   id: number;
@@ -3607,13 +3612,39 @@ export async function uploadCreditoDocumento(documentoId: number, input: UploadC
         ]
       );
 
+      // Obtener el número del crédito (consecutivo) para la carpeta de S3
+      const credRes = await client.query<{ consecutivo: string }>(
+        `select consecutivo from "Creditos"."TBL_CREDITOS" where id_credito = $1 limit 1`,
+        [row.id_credito]
+      );
+      const numeroCredito = (credRes.rows[0]?.consecutivo || `CR-${row.id_credito}`);
+      const carpetaCredito = sanitizeFolderName(numeroCredito);
+
+      let archivoUrl = `db:${hash}`;
+      try {
+        await createS3FolderIfNotExists(carpetaCredito);
+        const s3Upload = await uploadBufferToS3({
+          buffer: input.content,
+          folder: carpetaCredito,
+          fileName: input.fileName,
+          contentType: input.mimeType,
+          creditoId: row.id_credito,
+          metadata: { 'tipo-documento': row.documento }
+        });
+        if (s3Upload?.url) {
+          archivoUrl = s3Upload.url;
+        }
+      } catch (s3Err: any) {
+        console.warn('Advertencia al respaldar documento en S3:', s3Err.message);
+      }
+
       await client.query(
         `update "Creditos"."TBL_CREDITO_DOCUMENTOS"
          set estado_documento = 'CARGADO',
              v_archivo_url = $1,
              fec_actualizacion = now()
          where id_credito_documento = $2`,
-        [`db:${hash}`, documentoId]
+        [archivoUrl, documentoId]
       );
 
       await addCreditoHistory(

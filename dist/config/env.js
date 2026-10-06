@@ -67,6 +67,11 @@ const envSchema = z.object({
     JUMIO_WEBHOOK_SECRET: z.string().optional(),
     JUMIO_SIMULATION_MODE: z.coerce.boolean().default(true),
     JUMIO_SUCCESS_URL: z.string().default('http://localhost:5174/?jumio=success'),
-    JUMIO_ERROR_URL: z.string().default('http://localhost:5174/?jumio=error')
+    JUMIO_ERROR_URL: z.string().default('http://localhost:5174/?jumio=error'),
+    AWS_REGION: z.string().default('us-east-2'),
+    AWS_S3_BUCKET: z.string().default('s3-demo-financiera-009040764532-us-east-2-an'),
+    AWS_ACCESS_KEY_ID: z.string().optional(),
+    AWS_SECRET_ACCESS_KEY: z.string().optional(),
+    AWS_SESSION_TOKEN: z.string().optional()
 });
 export const env = envSchema.parse(process.env);
