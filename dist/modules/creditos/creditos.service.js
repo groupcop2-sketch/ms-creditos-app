@@ -1,3 +1,4 @@
+import { calcularProducto } from './calculo-producto.js';
 import crypto from 'node:crypto';
 import { pool } from '../../lib/db.js';
 import { SecurityError } from '../security/security.service.js';
@@ -156,39 +157,6 @@ function isDisbursementStage(value) {
     const key = normalizeKey(value);
     return key.includes('DESEMBOL');
 }
-function inferFormulaRuntime(row) {
-    const key = normalizeKey(`${row.formula_codigo ?? ''} ${row.tipo_calculo}`);
-    const base = row.base_calculo ?? (key.includes('DESEMBOLSO') ? 'VALOR_DESEMBOLSO' : key.includes('SALDO') ? 'SALDO' : key.includes('SMLMV') ? 'SMLMV' : key.includes('CUOTA') ? 'CUOTA' : 'VALOR_CREDITO');
-    const operacion = row.operacion ?? (key.includes('VALOR2') ? 'BASE_POR_VALOR_DIV_VALOR2' : key.includes('PLAZO') && key.includes('VALOR') ? 'VALOR_POR_PLAZO' : key.includes('%') ? 'PORCENTAJE' : 'VALOR_FIJO');
-    return { base, operacion };
-}
-function getFormulaBase(base, context) {
-    if (base === 'VALOR_DESEMBOLSO')
-        return context.valorDesembolso;
-    if (base === 'SALDO')
-        return context.saldo;
-    if (base === 'SMLMV')
-        return context.smlmv;
-    if (base === 'CUOTA')
-        return context.cuota;
-    if (base === 'VALOR')
-        return context.monto;
-    return context.valorCredito;
-}
-function calculateFormulaValue(row, context) {
-    const formula = inferFormulaRuntime(row);
-    const base = getFormulaBase(formula.base, context);
-    const valor = row.valor ? Number(row.valor) : 0;
-    const valor2 = row.valor2 ? Number(row.valor2) : 0;
-    const porcentaje = row.porcentaje ? Number(row.porcentaje) : null;
-    if (formula.operacion === 'PORCENTAJE')
-        return porcentaje !== null ? (base * porcentaje) / 100 : 0;
-    if (formula.operacion === 'VALOR_POR_PLAZO')
-        return valor * context.plazo;
-    if (formula.operacion === 'BASE_POR_VALOR_DIV_VALOR2')
-        return valor2 ? (base * valor) / valor2 : 0;
-    return valor;
-}
 function calculateInstallment(principal, monthlyRate, months) {
     if (monthlyRate <= 0)
         return principal / months;
@@ -224,8 +192,9 @@ async function ensureParametrosFinancierosTable(client) {
     where not exists (select 1 from "Creditos"."TBL_PARAMETROS_FINANCIEROS" where codigo = 'IVA')
   `);
 }
-async function getParametroFinanciero(client, codigo, fecha = new Date()) {
-    await ensureParametrosFinancierosTable(client);
+async function getParametroFinanciero(client, codigo, fecha = new Date(), inicializar = true) {
+    if (inicializar)
+        await ensureParametrosFinancierosTable(client);
     const result = await client.query(`select valor
      from "Creditos"."TBL_PARAMETROS_FINANCIEROS"
      where codigo = $1
@@ -704,15 +673,6 @@ function mapLiquidacionDefinitiva(row) {
         fecha: row.fec_creacion
     };
 }
-function clasificarConceptoLiquidacion(row) {
-    const texto = [row.nombre, row.tipo_atributo, row.tipo_calculo].filter(Boolean).join(' ').toUpperCase();
-    const valor = roundMoney(Number(row.valor_calculado ?? 0));
-    if (texto.includes('INTERES') || texto.includes('INTERES'))
-        return { valor, clase: 'INTERES' };
-    if (texto.includes('DESEMBOLSO') || texto.includes('DESCUENTO'))
-        return { valor, clase: 'DESCUENTO_DESEMBOLSO' };
-    return { valor, clase: 'CARGO_FINANCIADO' };
-}
 async function construirLiquidacionDefinitiva(client, creditoId) {
     const creditoResult = await client.query(`${creditoSelect} where c.id_credito = $1`, [creditoId]);
     if (!creditoResult.rowCount)
@@ -725,84 +685,33 @@ async function construirLiquidacionDefinitiva(client, creditoId) {
      order by d.fec_creacion desc, d.id_credito_decision desc
      limit 1`, [creditoId]);
     const decision = decisionResult.rows[0] ?? null;
-    const conceptosResult = await client.query(`select *
-     from "Creditos"."TBL_CREDITO_LIQUIDACION"
-     where id_credito = $1
-     order by id_credito_liquidacion`, [creditoId]);
     const montoSolicitado = roundMoney(Number(credito.val_monto_solicitado));
-    const montoAprobado = decision?.monto_aprobado ? roundMoney(Number(decision.monto_aprobado)) : montoSolicitado;
+    const montoAprobado = decision?.monto_aprobado ? Number(decision.monto_aprobado) : montoSolicitado;
     const plazo = decision?.plazo_aprobado ?? credito.num_plazo;
-    const tasaMensual = decision?.tasa_aprobada ? Number(decision.tasa_aprobada) : credito.val_tasa ? Number(credito.val_tasa) : 0;
-    let cargosFinanciados = 0;
-    let descuentosDesembolso = 0;
-    let iva = 0;
+    const calculo = await calcularCreditoConfigurado(client, credito.id_producto_credito, montoAprobado, plazo, decision?.tasa_aprobada != null ? Number(decision.tasa_aprobada) : null);
     const porcentajeIva = await getParametroFinanciero(client, 'IVA') ?? 19;
-    const conceptos = conceptosResult.rows.map((row) => {
-        const clasificacion = clasificarConceptoLiquidacion(row);
-        if (clasificacion.clase === 'CARGO_FINANCIADO')
-            cargosFinanciados += clasificacion.valor;
-        if (clasificacion.clase === 'DESCUENTO_DESEMBOLSO')
-            descuentosDesembolso += clasificacion.valor;
-        if (row.aplica_iva)
-            iva += roundMoney(clasificacion.valor * (porcentajeIva / 100));
-        return {
-            id: row.id_credito_liquidacion,
-            nombre: row.nombre,
-            tipoAtributo: row.tipo_atributo,
-            tipoCalculo: row.tipo_calculo,
-            valor: row.valor ? Number(row.valor) : null,
-            porcentaje: row.porcentaje ? Number(row.porcentaje) : null,
-            valorCalculado: clasificacion.valor,
-            aplicaIva: row.aplica_iva,
-            clase: clasificacion.clase
-        };
-    });
-    cargosFinanciados = roundMoney(cargosFinanciados + iva);
-    descuentosDesembolso = roundMoney(descuentosDesembolso);
-    iva = roundMoney(iva);
-    const valorCredito = roundMoney(montoAprobado + cargosFinanciados);
-    const valorDesembolso = roundMoney(Math.max(montoAprobado - descuentosDesembolso, 0));
-    const cuota = roundMoney(decision?.cuota_aprobada ? Number(decision.cuota_aprobada) : calculateInstallment(valorCredito, tasaMensual / 100, plazo));
-    const amortizacion = await client.query('select * from "Creditos".generar_amortizacion($1, $2, $3)', [valorCredito, tasaMensual * 12, plazo]);
-    const planPagos = amortizacion.rows.map((row, index) => ({
-        numero: index + 1,
-        cuota: roundMoney(Number(row.cuota)),
-        capital: roundMoney(Number(row.capital)),
-        interes: roundMoney(Number(row.interes)),
-        saldo: roundMoney(Number(row.saldo))
-    }));
+    const iva = roundMoney(calculo.atributos.filter(a => a.sumaAlCredito && a.aplicaIva)
+        .reduce((total, a) => total + a.valorCalculado - a.valorCalculado / (1 + porcentajeIva / 100), 0));
     return {
-        montoSolicitado,
-        montoAprobado,
-        plazo,
-        tasaMensual: roundMoney(tasaMensual),
-        cuota,
-        cargosFinanciados,
-        descuentosDesembolso,
-        iva,
-        valorDesembolso,
-        valorCredito,
-        totalIntereses: roundMoney(planPagos.reduce((total, row) => total + row.interes, 0)),
-        totalPagar: roundMoney(planPagos.reduce((total, row) => total + row.cuota, 0)),
-        conceptos,
-        planPagos
+        ...calculo.resumen, montoSolicitado, montoAprobado, cuota: calculo.resumen.cuotaEstimada, iva,
+        conceptos: calculo.atributos.map(a => ({ ...a, clase: a.sumaAlCredito ? 'CARGO_FINANCIADO' : a.sumaALaCuota ? 'CARGO_CUOTA' : a.esDescuento ? 'DESCUENTO_DESEMBOLSO' : 'INTERES' })),
+        planPagos: calculo.plan.map(row => ({ ...row, saldo: row.saldoFinal }))
     };
 }
 async function generarCuotasDefinitivas(client, credito, input) {
     await ensureCreditoCuotasTable(client);
     const periodicidad = input.periodicidad ?? 'MENSUAL';
-    const plazo = Math.max(1, Number(credito.num_plazo));
-    const liquidacionFinal = await client.query(`select valor_credito
+    const liquidacionFinal = await client.query(`select valor_credito, tasa_mensual, plazo, plan_pagos
      from "Creditos"."TBL_CREDITO_LIQUIDACIONES_FINALES"
      where id_credito = $1 and estado = 'VIGENTE'
      order by numero_version desc, id_credito_liquidacion_final desc
      limit 1`, [credito.id_credito]);
+    const plazo = Math.max(1, Number(liquidacionFinal.rows[0]?.plazo ?? credito.num_plazo));
     const principal = roundMoney(liquidacionFinal.rows[0]?.valor_credito ? Number(liquidacionFinal.rows[0].valor_credito) : input.valorDesembolso || Number(credito.val_monto_solicitado));
-    const tasaMensual = credito.val_tasa ? Number(credito.val_tasa) / 100 : 0;
+    const tasaMensual = Number(liquidacionFinal.rows[0]?.tasa_mensual ?? credito.val_tasa ?? 0) / 100;
     const tasaPeriodo = periodicidad === 'QUINCENAL' ? tasaMensual / 2 : tasaMensual;
     const cuotaBase = roundMoney(calculateInstallment(principal, tasaPeriodo, plazo));
-    const cargosTotal = 0;
-    const cargosPorCuota = roundMoney(cargosTotal / plazo);
+    const cargosPlan = liquidacionFinal.rows[0]?.plan_pagos ?? [];
     const desembolsoDate = parseLocalDate(input.fechaDesembolso);
     const primeraCuotaDate = input.fechaPrimeraCuota
         ? parseLocalDate(input.fechaPrimeraCuota)
@@ -821,6 +730,7 @@ async function generarCuotasDefinitivas(client, credito, input) {
         fechaVencimiento.setDate(fechaVencimiento.getDate() + moraDespues);
         const interes = roundMoney(saldo * tasaPeriodo);
         const capital = index === plazo - 1 ? saldo : roundMoney(cuotaBase - interes);
+        const cargosPorCuota = roundMoney(Number(cargosPlan[index]?.cargos ?? 0));
         const valorCuota = roundMoney(capital + interes + cargosPorCuota);
         const saldoFinal = Math.max(0, roundMoney(saldo - capital));
         await client.query(`insert into "Creditos"."TBL_CREDITO_CUOTAS" (
@@ -920,6 +830,26 @@ export async function listCreditos() {
         return result.rows.map(mapCredito);
     });
 }
+async function calcularCreditoConfigurado(client, productoId, monto, plazo, tasaAprobada) {
+    const result = await client.query(`select a.*, ta.des_tipo_atributo as tipo_atributo, tc.des_tipo_calculo as tipo_calculo,
+      tc.codigo as formula_codigo, tc.base_calculo, tc.operacion, tc.aplica_minimo, tc.aplica_maximo
+     from "Creditos"."TBL_PRODUCTO_CREDITO_ATRIBUTOS" a
+     inner join "Creditos"."TBL_TIPOS_ATRIBUTO_CREDITO" ta on ta.id_tipo_atributo = a.id_tipo_atributo
+     inner join "Creditos"."TBL_TIPOS_CALCULO_CREDITO" tc on tc.id_tipo_calculo = a.id_tipo_calculo
+     where a.id_producto_credito = $1 order by a.prioridad, a.id_producto_atributo`, [productoId]);
+    const necesitaSmlmv = result.rows.some(row => row.base_calculo === 'SMLMV' || normalizeKey(row.tipo_calculo).includes('SMLMV'));
+    const necesitaIva = result.rows.some(row => row.aplica_iva);
+    const smlmv = necesitaSmlmv ? await getParametroFinanciero(client, 'SMLMV', new Date(), false) : 0;
+    const iva = necesitaIva ? await getParametroFinanciero(client, 'IVA', new Date(), false) : 0;
+    if (smlmv === null || iva === null)
+        throw new SecurityError('Falta configurar un parametro financiero vigente requerido por el producto (SMLMV o IVA)', 400);
+    try {
+        return calcularProducto(monto, plazo, result.rows, smlmv, iva, tasaAprobada);
+    }
+    catch (error) {
+        throw new SecurityError(error instanceof Error ? error.message : 'Configuracion del producto invalida', 400);
+    }
+}
 export async function simularCredito(input) {
     return withClient(async (client) => {
         const producto = await client.query(`select id_producto_credito, nombre, tipo_tasa, monto_minimo, monto_maximo, plazo_minimo, plazo_maximo
@@ -929,7 +859,6 @@ export async function simularCredito(input) {
             throw new SecurityError('Producto de credito no encontrado', 404);
         const monto = nullableNumber(input.montoSolicitado);
         const plazo = nullableNumber(input.plazo);
-        const tasaSolicitada = nullableNumber(input.tasa);
         if (!monto || monto <= 0)
             throw new SecurityError('El monto solicitado debe ser mayor a cero', 400);
         if (!plazo || plazo <= 0)
@@ -945,77 +874,8 @@ export async function simularCredito(input) {
             throw new SecurityError(`El plazo minimo para este producto es ${product.plazo_minimo} meses`, 400);
         if (product.plazo_maximo !== null && plazo > product.plazo_maximo)
             throw new SecurityError(`El plazo maximo para este producto es ${product.plazo_maximo} meses`, 400);
-        const atributosResult = await client.query(`select a.*, ta.des_tipo_atributo as tipo_atributo, tc.des_tipo_calculo as tipo_calculo, tc.codigo as formula_codigo, tc.base_calculo, tc.operacion, tc.aplica_minimo, tc.aplica_maximo
-       from "Creditos"."TBL_PRODUCTO_CREDITO_ATRIBUTOS" a
-       inner join "Creditos"."TBL_TIPOS_ATRIBUTO_CREDITO" ta on ta.id_tipo_atributo = a.id_tipo_atributo
-       inner join "Creditos"."TBL_TIPOS_CALCULO_CREDITO" tc on tc.id_tipo_calculo = a.id_tipo_calculo
-       where a.id_producto_credito = $1
-       order by a.prioridad, a.nombre`, [input.idProductoCredito]);
-        const tasaProducto = atributosResult.rows
-            .map((row) => {
-            const key = normalizeKey(`${row.nombre} ${row.tipo_atributo} ${row.tipo_calculo}`);
-            return key.includes('INTERES') && row.porcentaje ? Number(row.porcentaje) : null;
-        })
-            .find((value) => typeof value === 'number' && Number.isFinite(value));
-        const tasa = tasaSolicitada ?? tasaProducto ?? 0;
-        if (tasa <= 0) {
-            throw new SecurityError('Este producto no tiene una tasa de interes configurada', 400);
-        }
-        const smlmv = await getParametroFinanciero(client, 'SMLMV') ?? 1300000;
-        const iva = await getParametroFinanciero(client, 'IVA') ?? 0;
-        const atributos = atributosResult.rows.map((row) => {
-            const porcentaje = row.porcentaje ? Number(row.porcentaje) : null;
-            const valorBase = row.valor ? Number(row.valor) : 0;
-            let valorCalculado = calculateFormulaValue(row, { monto, valorCredito: monto, valorDesembolso: monto, saldo: monto, smlmv, cuota: 0, plazo });
-            const minimo = row.minimo ? Number(row.minimo) : null;
-            const maximo = row.maximo ? Number(row.maximo) : null;
-            if (minimo !== null && valorCalculado < minimo)
-                valorCalculado = minimo;
-            if (maximo !== null && valorCalculado > maximo)
-                valorCalculado = maximo;
-            const key = normalizeKey(`${row.nombre} ${row.tipo_atributo} ${row.tipo_calculo}`);
-            const esInteres = key.includes('INTERES');
-            const esDescuento = key.includes('DESEMBOLSO') || key.includes('DESCUENTO');
-            const sumaAlCredito = !esInteres && !esDescuento;
-            return {
-                id: row.id_producto_atributo,
-                nombre: row.nombre,
-                tipoAtributo: row.tipo_atributo,
-                tipoCalculo: row.tipo_calculo,
-                valor: row.valor ? Number(row.valor) : null,
-                porcentaje,
-                valorCalculado: roundMoney(valorCalculado),
-                aplicaIva: row.aplica_iva,
-                obligatorio: row.obligatorio,
-                prioridad: row.prioridad,
-                sumaAlCredito,
-                esDescuento
-            };
-        });
-        const cargosFinanciados = atributos
-            .filter((item) => item.sumaAlCredito)
-            .reduce((total, item) => total + item.valorCalculado, 0);
-        const descuentosDesembolso = atributos
-            .filter((item) => item.esDescuento)
-            .reduce((total, item) => total + item.valorCalculado, 0);
-        const valorCredito = roundMoney(monto + cargosFinanciados);
-        const valorDesembolso = roundMoney(Math.max(monto - descuentosDesembolso, 0));
-        const tasaMensual = tasa / 100;
-        const cuota = roundMoney(calculateInstallment(valorCredito, tasaMensual, plazo));
-        const convenio = await validarConvenioProducto(client, input.idProductoCredito, input.idEmpresa, monto);
-        const evaluacion = await evaluarCapacidadLibranza(client, product, input, cuota);
-        evaluacion.bloqueos.push(...convenio.bloqueos);
-        evaluacion.alertas.push(...convenio.alertas);
-        evaluacion.aprobado = evaluacion.bloqueos.length === 0;
-        const amortizacionDb = await client.query('select * from "Creditos".generar_amortizacion($1, $2, $3)', [valorCredito, tasa * 12, plazo]);
-        const plan = amortizacionDb.rows.map((row, index) => ({
-            numero: row.cuota_numero ?? index + 1,
-            saldoInicial: index === 0 ? valorCredito : Number(amortizacionDb.rows[index - 1]?.saldo ?? 0),
-            capital: Number(row.abono),
-            interes: Number(row.interes),
-            cuota: Number(row.cuota),
-            saldoFinal: Number(row.saldo)
-        }));
+        const calculo = await calcularCreditoConfigurado(client, input.idProductoCredito, monto, plazo);
+        const { resumen, atributos, plan } = calculo;
         return {
             producto: {
                 id: product.id_producto_credito,
@@ -1026,18 +886,7 @@ export async function simularCredito(input) {
                 plazoMinimo: product.plazo_minimo,
                 plazoMaximo: product.plazo_maximo
             },
-            resumen: {
-                montoSolicitado: roundMoney(monto),
-                valorDesembolso,
-                valorCredito,
-                cargosFinanciados: roundMoney(cargosFinanciados),
-                descuentosDesembolso: roundMoney(descuentosDesembolso),
-                plazo,
-                tasaMensual: tasa,
-                cuotaEstimada: cuota,
-                totalIntereses: roundMoney(plan.reduce((total, item) => total + item.interes, 0)),
-                totalPagar: roundMoney(plan.reduce((total, item) => total + item.cuota, 0))
-            },
+            resumen,
             atributos,
             plan
         };
@@ -1064,21 +913,10 @@ export async function createCredito(input) {
                 legacyTipoCredito = await client.query(`insert into "Creditos"."TBL_TIPO_CREDITOS" (v_descripcion, v_sigla, fec_creacion)
            values ('LIBRANZA', 'LIB', now()) returning id_tipo_credito`);
             }
-            const tasaProductoResult = await client.query(`select a.porcentaje
-         from "Creditos"."TBL_PRODUCTO_CREDITO_ATRIBUTOS" a
-         inner join "Creditos"."TBL_TIPOS_ATRIBUTO_CREDITO" ta on ta.id_tipo_atributo = a.id_tipo_atributo
-         inner join "Creditos"."TBL_TIPOS_CALCULO_CREDITO" tc on tc.id_tipo_calculo = a.id_tipo_calculo
-         where a.id_producto_credito = $1
-           and (
-             upper(coalesce(a.nombre, '') || ' ' || coalesce(ta.des_tipo_atributo, '') || ' ' || coalesce(tc.des_tipo_calculo, '')) like '%INTERES%'
-             or upper(coalesce(a.nombre, '') || ' ' || coalesce(ta.des_tipo_atributo, '') || ' ' || coalesce(tc.des_tipo_calculo, '')) like '%INTERÉS%'
-           )
-           and a.porcentaje is not null
-         order by a.prioridad, a.id_producto_atributo
-         limit 1`, [input.idProductoCredito]);
-            const tasa = nullableNumber(input.tasa) ?? (tasaProductoResult.rows[0]?.porcentaje ? Number(tasaProductoResult.rows[0].porcentaje) : null);
-            const cuotaBase = monto / plazo;
-            const cuotaConInteres = tasa ? cuotaBase + ((monto * (tasa / 100)) / plazo) : cuotaBase;
+            const calculo = await calcularCreditoConfigurado(client, input.idProductoCredito, monto, plazo);
+            const tasa = calculo.resumen.tasaMensual;
+            const cuotaConInteres = calculo.resumen.cuotaEstimada;
+            const valorCredito = calculo.resumen.valorCredito;
             const convenio = await validarConvenioProducto(client, input.idProductoCredito, input.idEmpresa, monto);
             if (convenio.bloqueos.length)
                 throw new SecurityError('Solicitud bloqueada por convenio: ' + convenio.bloqueos.join(' '), 400);
@@ -1106,11 +944,11 @@ export async function createCredito(input) {
                 consecutivo,
                 product.rows[0].nombre,
                 legacyCliente,
-                monto,
+                valorCredito,
                 plazo,
                 0,
                 tasa,
-                monto,
+                valorCredito,
                 cuotaConInteres,
                 legacyTipoCredito.rows[0].id_tipo_credito,
                 stateId,
@@ -1149,20 +987,12 @@ export async function createCredito(input) {
           case when orden = 1 then now() else null end
         from "Creditos"."TBL_PRODUCTO_CREDITO_ETAPAS"
         where id_producto_credito = $2`, [creditoId, input.idProductoCredito]);
-            await client.query(`insert into "Creditos"."TBL_CREDITO_LIQUIDACION" (
-          id_credito, id_producto_atributo, nombre, tipo_atributo, tipo_calculo, valor, porcentaje,
-          valor_calculado, aplica_iva
-        )
-        select $1, a.id_producto_atributo, a.nombre, ta.des_tipo_atributo, tc.des_tipo_calculo, a.valor, a.porcentaje,
-          case
-            when a.porcentaje is not null then round(($2::numeric * a.porcentaje) / 100, 2)
-            else a.valor
-          end,
-          a.aplica_iva
-        from "Creditos"."TBL_PRODUCTO_CREDITO_ATRIBUTOS" a
-        inner join "Creditos"."TBL_TIPOS_ATRIBUTO_CREDITO" ta on ta.id_tipo_atributo = a.id_tipo_atributo
-        inner join "Creditos"."TBL_TIPOS_CALCULO_CREDITO" tc on tc.id_tipo_calculo = a.id_tipo_calculo
-        where a.id_producto_credito = $3`, [creditoId, monto, input.idProductoCredito]);
+            for (const atributo of calculo.atributos) {
+                await client.query(`insert into "Creditos"."TBL_CREDITO_LIQUIDACION" (
+            id_credito, id_producto_atributo, nombre, tipo_atributo, tipo_calculo, valor, porcentaje, valor_calculado, aplica_iva
+          ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, [creditoId, atributo.id, atributo.nombre, atributo.tipoAtributo, atributo.tipoCalculo, atributo.valor,
+                    atributo.porcentaje, atributo.valorCalculado, atributo.aplicaIva]);
+            }
             await client.query('commit');
             const result = await client.query(`${creditoSelect} where c.id_credito = $1`, [creditoId]);
             return mapCredito(result.rows[0]);
@@ -2480,7 +2310,7 @@ export async function decideCredito(creditoId, input) {
             const row = credito.rows[0];
             const monto = input.montoAprobado ?? Number(row.val_monto_solicitado);
             const plazo = input.plazoAprobado ?? row.num_plazo;
-            const tasa = input.tasaAprobada ?? (row.val_tasa ? Number(row.val_tasa) : null);
+            let tasa = input.tasaAprobada ?? (row.val_tasa ? Number(row.val_tasa) : null);
             if (input.decision === 'APROBADO') {
                 if (!monto || monto <= 0)
                     throw new SecurityError('El monto aprobado debe ser mayor a cero', 400);
@@ -2488,7 +2318,12 @@ export async function decideCredito(creditoId, input) {
                     throw new SecurityError('El plazo aprobado debe ser mayor a cero', 400);
                 await validarLimiteAprobacionUsuario(client, input.usuarioId, monto);
             }
-            const cuota = input.cuotaAprobada ?? (tasa ? calculateInstallment(monto, tasa / 100, plazo) : monto / plazo);
+            const calculoAprobado = input.decision === 'APROBADO'
+                ? await calcularCreditoConfigurado(client, row.id_producto_credito, monto, plazo, input.tasaAprobada)
+                : null;
+            if (calculoAprobado)
+                tasa = calculoAprobado.resumen.tasaMensual;
+            const cuota = calculoAprobado?.resumen.cuotaEstimada ?? input.cuotaAprobada ?? Number(row.val_cuota_estimada);
             const expedienteEvaluacion = await getCreditoExpediente(creditoId);
             if (input.decision === 'APROBADO' && expedienteEvaluacion.evaluacionAutomatica?.recomendacion === 'RECHAZAR') {
                 throw new SecurityError('La evaluacion automatica recomienda rechazar: ' + expedienteEvaluacion.evaluacionAutomatica.bloqueos.join(' '), 400);

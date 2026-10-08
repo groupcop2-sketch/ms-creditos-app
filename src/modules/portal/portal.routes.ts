@@ -1,3 +1,4 @@
+import { simularCredito } from '../creditos/creditos.service.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { SecurityError } from '../security/security.service.js';
@@ -132,6 +133,11 @@ export async function portalRoutes(app: FastifyInstance) {
     const user = request.user as unknown as PortalJwtPayload;
     const body = laborProfileSchema.parse(request.body);
     return completePortalLaborProfile(user.clienteId, body);
+  });
+
+  app.post('/simulacion', async (request) => {
+    const body = creditoPortalSchema.pick({ idProductoCredito: true, montoSolicitado: true, plazo: true }).parse(request.body);
+    return simularCredito(body);
   });
 
   app.get('/productos', async () => {

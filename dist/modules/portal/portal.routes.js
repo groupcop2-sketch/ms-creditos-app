@@ -1,3 +1,4 @@
+import { simularCredito } from '../creditos/creditos.service.js';
 import { z } from 'zod';
 import { SecurityError } from '../security/security.service.js';
 import { confirmPortalEmail, completePortalLaborProfile, crearSolicitudPortalCredito, getPortalClientById, listPortalCatalogs, listPortalCreditos, listPortalProductosCredito, loginPortalClient, requestPortalPasswordReset, registerPortalClient, resetPortalPassword, simularPortalCredito } from './portal.service.js';
@@ -98,6 +99,10 @@ export async function portalRoutes(app) {
         const user = request.user;
         const body = laborProfileSchema.parse(request.body);
         return completePortalLaborProfile(user.clienteId, body);
+    });
+    app.post('/simulacion', async (request) => {
+        const body = creditoPortalSchema.pick({ idProductoCredito: true, montoSolicitado: true, plazo: true }).parse(request.body);
+        return simularCredito(body);
     });
     app.get('/productos', async () => {
         return listPortalProductosCredito();
