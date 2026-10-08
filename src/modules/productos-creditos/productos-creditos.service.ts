@@ -698,12 +698,12 @@ export async function listProductoAtributos(productoId: number) {
 }
 
 function validarEntradaAtributo(input: CreateProductoAtributoInput) {
-  try { validarValorAtributo(input); }
+  try { return validarValorAtributo(input); }
   catch (error) { throw new SecurityError(error instanceof Error ? error.message : 'Configuracion de atributo invalida', 400); }
 }
 
 export async function updateProductoAtributo(productoId: number, productoAtributoId: number, input: CreateProductoAtributoInput) {
-  validarEntradaAtributo(input);
+  input = { ...input, ...validarEntradaAtributo(input) };
   return withClient(async (client) => {
     await ensureFormulaColumns(client);
     await ensureProducto(client, productoId);

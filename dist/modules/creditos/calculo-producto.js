@@ -2,8 +2,13 @@ const key = (s) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCas
 export const money = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 const numeric = (value) => value == null || (typeof value === 'string' && !value.trim()) ? null : Number(value);
 export function validarValorAtributo(input) {
-    const valor = numeric(input.valor);
-    const porcentaje = numeric(input.porcentaje);
+    let valor = numeric(input.valor);
+    let porcentaje = numeric(input.porcentaje);
+    // Legacy forms store the inactive field as zero instead of null.
+    if (valor !== null && valor > 0 && porcentaje === 0)
+        porcentaje = null;
+    if (porcentaje !== null && porcentaje > 0 && valor === 0)
+        valor = null;
     if ((valor !== null) === (porcentaje !== null))
         throw new Error('El atributo ' + input.nombre + ' debe tener solo uno: porcentaje o valor fijo');
     if ([valor, porcentaje].some(value => value !== null && (!Number.isFinite(value) || value < 0)))
@@ -68,7 +73,7 @@ export function calcularProducto(monto, plazo, rows, smlmv, iva, tasaAprobada) {
         if (sumaAlCredito && row.base_calculo === 'CUOTA')
             throw new Error('Un cargo financiado no puede depender de la cuota: ' + row.nombre);
         return { id: row.id_producto_atributo, nombre: row.nombre, tipoAtributo: row.tipo_atributo, tipoCalculo: row.tipo_calculo,
-            valor: numeric(row.valor), porcentaje: esInteres ? tasa : numeric(row.porcentaje), aplicaIva: row.aplica_iva,
+            valor: validarValorAtributo(row).valor, porcentaje: esInteres ? tasa : validarValorAtributo(row).porcentaje, aplicaIva: row.aplica_iva,
             obligatorio: row.obligatorio, prioridad: row.prioridad, sumaAlCredito, sumaALaCuota, esDescuento,
             valorCalculado: esInteres ? 0 : evaluar(row, 0, monto) };
     });

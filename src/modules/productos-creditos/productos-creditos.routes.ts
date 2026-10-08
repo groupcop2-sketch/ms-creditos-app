@@ -1,3 +1,4 @@
+import { validarValorAtributo } from '../creditos/calculo-producto.js';
 ﻿import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { JwtUserPayload } from '../../types/auth.js';
@@ -106,9 +107,10 @@ const atributoSchema = z.object({
   obligatorio: z.boolean().nullable().optional(),
   proveedor: z.string().trim().nullable().optional(),
   prioridad: z.coerce.number().int().positive().nullable().optional()
-}).refine(input => (input.valor != null) !== (input.porcentaje != null), {
-  message: 'Configura solo uno: porcentaje o valor fijo', path: ['valor']
-});
+}).refine(input => {
+  try { validarValorAtributo(input); return true; } catch { return false; }
+}, { message: 'Configura solo uno: porcentaje o valor fijo; interes corriente requiere porcentaje mensual', path: ['valor'] })
+  .transform(input => ({ ...input, ...validarValorAtributo(input) }));
 
 const convenioSchema = z.object({
   idEmpresa: z.coerce.number().int().positive(),

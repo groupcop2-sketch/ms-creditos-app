@@ -1,3 +1,4 @@
+import { validarValorAtributo } from '../creditos/calculo-producto.js';
 import { z } from 'zod';
 import { createProductoAtributo, createTipoCalculoCredito, createParametroFinanciero, createProductoCredito, createProductoCreditoVersion, createProductoDocumento, saveProductoConvenio, createProductoEtapa, deleteProductoAtributo, deleteProductoCredito, deleteProductoConvenio, deleteProductoDocumento, deleteProductoEtapa, listParametrosFinancieros, listProductoAtributos, listProductoConvenios, listProductoDocumentos, listProductoEtapas, listProductosCredito, listProductosCreditoCatalogs, updateProductoAtributo, updateProductoCredito, updateProductoCreditoEstado, updateProductoDocumento, updateProductoEtapa } from './productos-creditos.service.js';
 const productoSchema = z.object({
@@ -73,9 +74,16 @@ const atributoSchema = z.object({
     obligatorio: z.boolean().nullable().optional(),
     proveedor: z.string().trim().nullable().optional(),
     prioridad: z.coerce.number().int().positive().nullable().optional()
-}).refine(input => (input.valor != null) !== (input.porcentaje != null), {
-    message: 'Configura solo uno: porcentaje o valor fijo', path: ['valor']
-});
+}).refine(input => {
+    try {
+        validarValorAtributo(input);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}, { message: 'Configura solo uno: porcentaje o valor fijo; interes corriente requiere porcentaje mensual', path: ['valor'] })
+    .transform(input => ({ ...input, ...validarValorAtributo(input) }));
 const convenioSchema = z.object({
     idEmpresa: z.coerce.number().int().positive(),
     cupoTotal: z.coerce.number().nonnegative().nullable().optional(),

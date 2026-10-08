@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { calcularProducto, money } from '../src/modules/creditos/calculo-producto.ts';
+import { calcularProducto, money, validarValorAtributo } from '../src/modules/creditos/calculo-producto.ts';
 const row = (id, nombre, tipo, porcentaje, valor = null, extra = {}) => ({id_producto_atributo:id,nombre,tipo_atributo:tipo,tipo_calculo:porcentaje == null ? 'Valor fijo' : 'PORCENTAJE',porcentaje,valor,valor2:null,minimo:null,maximo:null,aplica_iva:false,obligatorio:true,prioridad:id,...extra});
 const plus = [row(1,'INTERES CORRIENTE','CUOTA',2.13),row(2,'FIANZA DE CREDITOS','CREDITO',1.2),row(3,'SEGURO DE VIDA','CREDITO',1.5),row(4,'AFILIACION','CREDITO',null,112054),row(5,'CORRETAJE','CREDITO',null,1600000)];
 test('Libranza Plus finances charges on requested amount and applies monthly interest once',()=> {
@@ -18,3 +18,6 @@ test('zero interest amortizes principal; missing/duplicate interest and invalid 
 test('populated percentage overrides a fixed-value formula label',()=>{const r=calcularProducto(1000,12,[plus[0],row(2,'CARGO','CREDITO',10,null,{tipo_calculo:'Valor fijo',operacion:'VALOR_FIJO'})],0,0);assert.equal(r.resumen.valorCredito,1100);});
 test('populated value overrides a percentage formula label',()=>{const r=calcularProducto(1000,12,[plus[0],row(2,'CARGO','CREDITO',null,50,{tipo_calculo:'PORCENTAJE',operacion:'PORCENTAJE'})],0,0);assert.equal(r.resumen.valorCredito,1050);});
 test('missing, simultaneous and negative configurations fail; zero is present',()=>{for(const [pct,val] of [[null,null],[2,100],[0,0],[-1,null],[null,-1]])assert.throws(()=>calcularProducto(1000,12,[plus[0],row(2,'CARGO','CREDITO',pct,val)],0,0));assert.equal(calcularProducto(1000,12,[plus[0],row(2,'CARGO','CREDITO',0)],0,0).resumen.valorCredito,1000);assert.equal(calcularProducto(1000,12,[plus[0],row(2,'CARGO','CREDITO',null,0)],0,0).resumen.valorCredito,1000);});
+
+test('inactive legacy zero selects the positive fixed value despite percentage label',()=>{const r=calcularProducto(10000000,24,[plus[0],row(2,'FIANZA DE CREDITOS','CREDITO',0,131456),row(3,'SEGURO DE VIDA DEUDORES','CREDITO',0,66281)],0,0);assert.equal(r.resumen.cargosFinanciados,197737);assert.equal(r.resumen.valorCredito,10197737);assert.equal(r.atributos[1].porcentaje,null);assert.equal(r.atributos[1].valor,131456);});
+test('inactive legacy value zero selects the percentage; normalized saves contain null',()=>{assert.deepEqual(validarValorAtributo({nombre:'FIANZA',valor:0,porcentaje:1.2}),{valor:null,porcentaje:1.2});assert.deepEqual(validarValorAtributo({nombre:'FIANZA',valor:131456,porcentaje:0}),{valor:131456,porcentaje:null});const r=calcularProducto(1000,12,[plus[0],row(2,'FIANZA','CREDITO',1.2,0)],0,0);assert.equal(r.resumen.valorCredito,1012);});
