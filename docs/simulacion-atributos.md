@@ -20,3 +20,5 @@ Pruebas: node --test scripts/test-calculo-producto.mjs
 Compilacion: npm run build
 
 Verificacion de solo lectura con Libranza Plus configurado: solicitado 10.000.000, fianza 1,2%, seguro 1,5%, afiliacion 112.054, corretaje 1.600.000, capital real 11.982.054, interes mensual 2,13%, plazo 24, cuota inicial 642.871,99.
+
+Cada atributo debe configurar exactamente un campo: porcentaje o valor. Null/cadena vacia indican ausencia; cero es valido. El dato poblado selecciona el calculo aunque el nombre de la formula no coincida. En configuraciones por valor se conservan las operaciones explicitas de valor por plazo y base por valor/divisor. INTERES CORRIENTE requiere porcentaje mensual. La API valida tanto altas como ediciones y el motor rechaza configuraciones ambiguas preexistentes.

@@ -1,12 +1,24 @@
 const key = (s) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
 export const money = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
-const numeric = (value) => value == null ? null : Number(value);
+const numeric = (value) => value == null || (typeof value === 'string' && !value.trim()) ? null : Number(value);
+export function validarValorAtributo(input) {
+    const valor = numeric(input.valor);
+    const porcentaje = numeric(input.porcentaje);
+    if ((valor !== null) === (porcentaje !== null))
+        throw new Error('El atributo ' + input.nombre + ' debe tener solo uno: porcentaje o valor fijo');
+    if ([valor, porcentaje].some(value => value !== null && (!Number.isFinite(value) || value < 0)))
+        throw new Error('El porcentaje o valor del atributo ' + input.nombre + ' debe ser un numero mayor o igual a cero');
+    if (key(input.nombre).includes('INTERES CORRIENTE') && porcentaje === null)
+        throw new Error('INTERES CORRIENTE requiere un porcentaje mensual');
+    return { valor, porcentaje };
+}
 export function installment(principal, rate, months) {
     return rate === 0 ? principal / months : principal * rate / (1 - Math.pow(1 + rate, -months));
 }
 export function calcularProducto(monto, plazo, rows, smlmv, iva, tasaAprobada) {
     if (!Number.isFinite(monto) || monto <= 0 || !Number.isInteger(plazo) || plazo <= 0)
         throw new Error('Monto o plazo invalido');
+    rows.forEach(validarValorAtributo);
     const intereses = rows.filter(r => key(r.nombre).includes('INTERES CORRIENTE'));
     if (intereses.length !== 1 || numeric(intereses[0].porcentaje) == null)
         throw new Error('El producto debe tener un unico atributo de INTERES CORRIENTE con porcentaje mensual');
@@ -19,7 +31,10 @@ export function calcularProducto(monto, plazo, rows, smlmv, iva, tasaAprobada) {
         const base = row.base_calculo ?? (formula.includes('SMLMV') ? 'SMLMV' : formula.includes('SALDO') ? 'SALDO' : formula.includes('CUOTA') ? 'CUOTA' : 'VALOR_CREDITO');
         // VALOR_CREDITO/VALOR/VALOR_DESEMBOLSO use the requested amount, never the financed charges.
         const valorBase = base === 'SMLMV' ? smlmv : base === 'SALDO' ? saldo : base === 'CUOTA' ? cuota : monto;
-        const op = formula.includes('PORCENTAJE') || formula.includes('%') ? 'PORCENTAJE' : row.operacion ?? (formula.includes('VALOR2') ? 'BASE_POR_VALOR_DIV_VALOR2' : formula.includes('PLAZO') ? 'VALOR_POR_PLAZO' : 'VALOR_FIJO');
+        const configurado = validarValorAtributo(row);
+        // The populated field selects percentage vs value, even if the formula label is stale.
+        const operacionValor = row.operacion ?? (formula.includes('VALOR2') ? 'BASE_POR_VALOR_DIV_VALOR2' : formula.includes('PLAZO') ? 'VALOR_POR_PLAZO' : 'VALOR_FIJO');
+        const op = configurado.porcentaje !== null ? 'PORCENTAJE' : operacionValor === 'PORCENTAJE' ? 'VALOR_FIJO' : operacionValor;
         let valor;
         if (op === 'PORCENTAJE')
             valor = valorBase * Number(row.porcentaje ?? 0) / 100;

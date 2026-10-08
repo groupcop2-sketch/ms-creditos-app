@@ -1,3 +1,4 @@
+import { validarValorAtributo } from '../creditos/calculo-producto.js';
 import { pool } from '../../lib/db.js';
 import { SecurityError } from '../security/security.service.js';
 function normalizeKey(value) {
@@ -429,7 +430,16 @@ export async function listProductoAtributos(productoId) {
         return result.rows.map((row) => ({ id: row.id_producto_atributo, tipoAtributo: row.tipo_atributo, tipoCalculo: row.tipo_calculo, nombre: row.nombre, valor: row.valor ? Number(row.valor) : null, porcentaje: row.porcentaje ? Number(row.porcentaje) : null, valor2: row.valor2 ? Number(row.valor2) : null, minimo: row.minimo ? Number(row.minimo) : null, maximo: row.maximo ? Number(row.maximo) : null, aplicaIva: row.aplica_iva, obligatorio: row.obligatorio, proveedor: row.proveedor, prioridad: row.prioridad }));
     });
 }
+function validarEntradaAtributo(input) {
+    try {
+        validarValorAtributo(input);
+    }
+    catch (error) {
+        throw new SecurityError(error instanceof Error ? error.message : 'Configuracion de atributo invalida', 400);
+    }
+}
 export async function updateProductoAtributo(productoId, productoAtributoId, input) {
+    validarEntradaAtributo(input);
     return withClient(async (client) => {
         await ensureFormulaColumns(client);
         await ensureProducto(client, productoId);
@@ -461,6 +471,7 @@ export async function deleteProductoAtributo(productoId, productoAtributoId) {
     });
 }
 export async function createProductoAtributo(productoId, input) {
+    validarEntradaAtributo(input);
     return withClient(async (client) => {
         await ensureProducto(client, productoId);
         await client.query(`insert into "Creditos"."TBL_PRODUCTO_CREDITO_ATRIBUTOS" (id_producto_credito, id_tipo_atributo, id_tipo_calculo, nombre, valor, porcentaje, valor2, minimo, maximo, aplica_iva, obligatorio, proveedor, prioridad)
