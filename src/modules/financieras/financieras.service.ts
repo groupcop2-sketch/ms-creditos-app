@@ -99,6 +99,51 @@ export async function ensureFinancieraTables(): Promise<void> {
       fec_actualizacion timestamp with time zone default now(),
       constraint uq_financiera_integracion unique (id_financiera, id_integracion)
     );
+
+    insert into "Creditos"."TBL_INTEGRACIONES" (codigo, nombre, tipo, descripcion, url_base, configuracion_schema, ind_activo)
+    values
+      (
+        'JUMIO',
+        'Jumio Identity Cloud',
+        'BIOMETRIA',
+        'Validación biométrica 1:1, prueba de vida facial (liveness) y OCR de documento de identidad oficial.',
+        'https://content.us.jumio.ai',
+        '{"campos": ["client_id", "client_secret", "datacenter"]}'::jsonb,
+        true
+      ),
+      (
+        'DOCUSIGN',
+        'DocuSign eSignature',
+        'FIRMA_DIGITAL',
+        'Firma electrónica de pagaré, libranza y autorizaciones legales mediante sobres DocuSign.',
+        'https://account-d.docusign.com',
+        '{"campos": ["integration_key", "secret_key", "account_id", "base_uri"]}'::jsonb,
+        true
+      ),
+      (
+        'DIDIT',
+        'Didit Protocol KYC',
+        'BIOMETRIA',
+        'Verificación de identidad descentralizada, biometría facial 1:1, prueba de vida y validación de documento (NFC/OCR) mediante Didit Protocol.',
+        'https://verification.didit.me/v3',
+        '{"campos": ["api_key", "workflow_id", "webhook_secret"], "workflow_default": "e42a2607-2f9f-475e-a5b8-0cbfc0213b06"}'::jsonb,
+        true
+      )
+    on conflict (codigo) do update set
+      nombre = excluded.nombre,
+      tipo = excluded.tipo,
+      descripcion = excluded.descripcion,
+      url_base = excluded.url_base,
+      configuracion_schema = excluded.configuracion_schema,
+      fec_actualizacion = now();
+
+    insert into "Creditos"."TBL_INTEGRACIONES_FINANCIERA" (
+      id_financiera, id_integracion, ambiente, ind_activo, ind_modo_prueba
+    )
+    select f.id_financiera, i.id_integracion, 'SANDBOX', false, true
+    from "Creditos"."TBL_FINANCIERA" f
+    cross join "Creditos"."TBL_INTEGRACIONES" i
+    on conflict (id_financiera, id_integracion) do nothing;
   `);
 }
 
@@ -385,7 +430,7 @@ export async function toggleIntegracionFinanciera(
  * Validates whether an integration is active for a given credit or financiera
  */
 export async function verificarIntegracionActiva(
-  codigoIntegracion: 'JUMIO' | 'DOCUSIGN' | string,
+  codigoIntegracion: 'JUMIO' | 'DOCUSIGN' | 'DIDIT' | string,
   creditoId?: number | null,
   idFinancieraParam?: number | null
 ): Promise<{
@@ -395,6 +440,8 @@ export async function verificarIntegracionActiva(
   clientId: string | null;
   clientSecret: string | null;
   accountId: string | null;
+  apiKey: string | null;
+  webhookUrl: string | null;
   ambiente: string;
   urlBase: string | null;
   datosConexion: any;
@@ -431,6 +478,8 @@ export async function verificarIntegracionActiva(
       clientId: null,
       clientSecret: null,
       accountId: null,
+      apiKey: null,
+      webhookUrl: null,
       ambiente: 'PRODUCCION',
       urlBase: null,
       datosConexion: {}
@@ -465,6 +514,8 @@ export async function verificarIntegracionActiva(
       clientId: null,
       clientSecret: null,
       accountId: null,
+      apiKey: null,
+      webhookUrl: null,
       ambiente: 'PRODUCCION',
       urlBase: null,
       datosConexion: {}
@@ -481,6 +532,8 @@ export async function verificarIntegracionActiva(
     clientId: row.client_id,
     clientSecret: row.client_secret,
     accountId: row.account_id,
+    apiKey: row.api_key,
+    webhookUrl: row.webhook_url,
     ambiente: row.ambiente,
     urlBase: row.url_base,
     datosConexion: row.datos_conexion || {}

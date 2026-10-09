@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { env } from '../../config/env.js';
+import { SecurityError } from '../security/security.service.js';
 
 export interface S3UploadResult {
   success: boolean;
@@ -34,7 +35,9 @@ export interface UploadBufferOptions {
   metadata?: Record<string, string>;
 }
 
-const targetRegion = env.AWS_REGION || 'us-east-2';
+// En entornos Lambda/Vercel, process.env.AWS_REGION es reservado por el runtime (suele ser us-east-1).
+// Usamos prioritariamente env.AWS_S3_REGION o 'us-east-2' para apuntar al datacenter real del bucket.
+const targetRegion = env.AWS_S3_REGION || 'us-east-2';
 const targetBucket = env.AWS_S3_BUCKET || 's3-demo-financiera-009040764532-us-east-2-an';
 
 // Credentials evaluation
@@ -109,7 +112,11 @@ export async function createS3FolderIfNotExists(folderName: string): Promise<str
     await s3.send(command);
     console.log(`[AWS S3] Carpeta creada/verificada en S3: ${folderKey} en bucket ${targetBucket}`);
   } catch (err: any) {
-    console.warn(`[AWS S3] Advertencia creando carpeta ${folderKey}:`, err.message || err);
+    console.error(`[AWS S3] Error creando carpeta ${folderKey}:`, err);
+    throw new SecurityError(
+      `Error conectando con AWS S3 al crear la carpeta '${folderKey}' en el bucket '${targetBucket}': ${err.message || 'Fallo de autenticación o permisos'}. Asegúrate de configurar AWS_ACCESS_KEY_ID y AWS_SECRET_ACCESS_KEY en las variables de entorno de Vercel.`,
+      500
+    );
   }
 
   return cleanFolder;
@@ -155,7 +162,7 @@ export async function uploadBase64ImageToS3(
   const { base64Data, creditoId, fileNamePrefix, folder, numeroCredito } = options;
 
   if (!base64Data) {
-    throw new Error(`Datos de imagen vacíos para el archivo ${fileNamePrefix}`);
+    throw new SecurityError(`Datos de imagen vacíos para el archivo ${fileNamePrefix}`, 400);
   }
 
   const rawFolder = folder || numeroCredito || `CR-${creditoId}`;
@@ -200,31 +207,15 @@ export async function uploadBase64ImageToS3(
       simulated: false
     };
   } catch (err: any) {
-    console.warn(
-      `[AWS S3] Advertencia al subir imagen al bucket ${targetBucket} (${key}):`,
-      err.message || err
+    console.error(
+      `[AWS S3 ERROR] Fallo al subir imagen al bucket ${targetBucket} (${key}):`,
+      err
     );
 
-    const isCredentialsError =
-      err.name === 'CredentialsProviderError' ||
-      err.message?.includes('credential') ||
-      err.message?.includes('AccessDenied') ||
-      err.message?.includes('Forbidden') ||
-      err.name === 'AccessDenied';
-
-    return {
-      success: true,
-      bucket: targetBucket,
-      folder: cleanFolder,
-      key,
-      url: canonicalUrl,
-      s3Uri,
-      arn,
-      bytes: buffer.length,
-      contentType: mimeType,
-      simulated: isCredentialsError,
-      error: err.message
-    };
+    throw new SecurityError(
+      `Error al subir ${fileNamePrefix} al bucket S3 '${targetBucket}': ${err.message || 'Fallo de conexión'}. Asegúrate de configurar las variables AWS_ACCESS_KEY_ID y AWS_SECRET_ACCESS_KEY en Vercel y que tengan permisos en el bucket.`,
+      500
+    );
   }
 }
 
@@ -272,19 +263,10 @@ export async function uploadBufferToS3(options: UploadBufferOptions): Promise<S3
       simulated: false
     };
   } catch (err: any) {
-    console.warn(`[AWS S3] Advertencia al subir buffer (${key}):`, err.message || err);
-    return {
-      success: true,
-      bucket: targetBucket,
-      folder: cleanFolder,
-      key,
-      url: canonicalUrl,
-      s3Uri,
-      arn,
-      bytes: buffer.length,
-      contentType,
-      simulated: true,
-      error: err.message
-    };
+    console.error(`[AWS S3 ERROR] Fallo al subir buffer (${key}):`, err);
+    throw new SecurityError(
+      `Error al subir documento al bucket S3 '${targetBucket}': ${err.message || 'Fallo de conexión'}. Asegúrate de configurar AWS_ACCESS_KEY_ID y AWS_SECRET_ACCESS_KEY en Vercel.`,
+      500
+    );
   }
 }
