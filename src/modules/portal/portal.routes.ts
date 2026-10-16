@@ -13,7 +13,8 @@ import {
   requestPortalPasswordReset,
   registerPortalClient,
   resetPortalPassword,
-  simularPortalCredito
+  simularPortalCredito,
+  simularPortalCreditoPublico
 } from './portal.service.js';
 
 const registerSchema = z.object({
@@ -61,6 +62,13 @@ const creditoPortalSchema = z.object({
   montoSolicitado: z.coerce.number().positive(),
   plazo: z.coerce.number().int().positive(),
   codigoVendedor: z.string().trim().nullable().optional()
+});
+
+const simulacionPublicaSchema = z.object({
+  idProductoCredito: z.coerce.number().int().positive(),
+  montoSolicitado: z.coerce.number().positive(),
+  plazo: z.coerce.number().int().positive(),
+  tasa: z.coerce.number().nonnegative().nullable().optional()
 });
 
 type PortalJwtPayload = {
@@ -137,6 +145,12 @@ export async function portalRoutes(app: FastifyInstance) {
   app.get('/creditos', { preHandler: [authenticatePortal] }, async (request) => {
     const user = request.user as unknown as PortalJwtPayload;
     return listPortalCreditos(user.clienteId);
+  });
+
+  /** Simulación pública (landing / onboarding): incluye plan de amortización */
+  app.post('/simulacion', async (request) => {
+    const body = simulacionPublicaSchema.parse(request.body);
+    return simularPortalCreditoPublico(body);
   });
 
   app.post('/simular', { preHandler: [authenticatePortal] }, async (request) => {

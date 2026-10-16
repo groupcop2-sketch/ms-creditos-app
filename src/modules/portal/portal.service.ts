@@ -490,6 +490,20 @@ export async function listPortalCreditos(clienteId: number) {
   };
 }
 
+export async function simularPortalCreditoPublico(input: {
+  idProductoCredito: number;
+  montoSolicitado: number;
+  plazo: number;
+  tasa?: number | null;
+}) {
+  return simularCredito({
+    idProductoCredito: input.idProductoCredito,
+    montoSolicitado: input.montoSolicitado,
+    plazo: input.plazo,
+    tasa: input.tasa ?? null
+  });
+}
+
 export async function simularPortalCredito(clienteId: number, input: PortalSimularCreditoInput) {
   await getPortalClientById(clienteId);
   if (nullableText(input.codigoVendedor)) await findComercialByCode(input.codigoVendedor!);
