@@ -1,3 +1,4 @@
+import { simularCredito } from '../creditos/creditos.service.js';
 import { z } from 'zod';
 import { SecurityError } from '../security/security.service.js';
 import { confirmPortalEmail, completePortalLaborProfile, crearSolicitudPortalCredito, getPortalClientById, listPortalCatalogs, listPortalCreditos, listPortalProductosCredito, loginPortalClient, requestPortalPasswordReset, registerPortalClient, resetPortalPassword, simularPortalCredito } from './portal.service.js';
@@ -10,7 +11,14 @@ const registerSchema = z.object({
     correo: z.string().trim().email(),
     telefono: z.string().trim().nullable().optional(),
     password: z.string().min(8),
-    idTipoIdentificacion: z.coerce.number().int().positive().nullable().optional()
+    idTipoIdentificacion: z.coerce.number().int().positive().nullable().optional(),
+    codigoEmpresa: z.string().trim().nullable().optional(),
+    cargo: z.string().trim().nullable().optional(),
+    idTipoContrato: z.coerce.number().int().positive().nullable().optional(),
+    fechaIngreso: z.string().trim().nullable().optional(),
+    salario: z.coerce.number().positive().nullable().optional(),
+    neto: z.coerce.number().nonnegative().nullable().optional(),
+    tieneEmbargos: z.boolean().nullable().optional()
 });
 const laborProfileSchema = z.object({
     codigoEmpresa: z.string().trim().min(1),
@@ -92,11 +100,11 @@ export async function portalRoutes(app) {
         const body = laborProfileSchema.parse(request.body);
         return completePortalLaborProfile(user.clienteId, body);
     });
-    app.get('/productos', { preHandler: [authenticatePortal] }, async (request) => {
-        const user = request.user;
-        const cliente = await getPortalClientById(user.clienteId);
-        if (!cliente.perfilCompleto)
-            return [];
+    app.post('/simulacion', async (request) => {
+        const body = creditoPortalSchema.pick({ idProductoCredito: true, montoSolicitado: true, plazo: true }).parse(request.body);
+        return simularCredito(body);
+    });
+    app.get('/productos', async () => {
         return listPortalProductosCredito();
     });
     app.get('/creditos', { preHandler: [authenticatePortal] }, async (request) => {

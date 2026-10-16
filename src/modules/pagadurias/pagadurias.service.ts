@@ -455,7 +455,7 @@ export async function listAddressCatalogs() {
 
 export async function listEmployeeCatalogs() {
   return withClient(async (client) => {
-    const [tiposContrato, bancos, tiposCuenta, estadosCivil, tiposVivienda] = await Promise.all([
+    const [tiposContrato, bancos, tiposCuenta, estadosCivil, tiposVivienda, cargos] = await Promise.all([
       client.query<AddressCatalogRow>(
         'select id_tipo_contrato as id, des_tipo_contrato as nombre from "Creditos"."TBL_TIPO_CONTRATO" order by des_tipo_contrato'
       ),
@@ -470,7 +470,10 @@ export async function listEmployeeCatalogs() {
       ),
       client.query<AddressCatalogRow>(
         'select id_tipo_vivienda as id, des_tipo_vivienda as nombre from "Creditos"."TBL_TIPO_VIVIENDA" order by des_tipo_vivienda'
-      )
+      ),
+      client.query<AddressCatalogRow>(
+        'select id_cargo as id, des_cargo as nombre from "Creditos"."TBL_CARGOS" where id_estado is null or id_estado = 1 order by des_cargo'
+      ).catch(() => ({ rows: [] as AddressCatalogRow[] }))
     ]);
 
     return {
@@ -478,7 +481,8 @@ export async function listEmployeeCatalogs() {
       bancos: bancos.rows,
       tiposCuenta: tiposCuenta.rows,
       estadosCivil: estadosCivil.rows,
-      tiposVivienda: tiposVivienda.rows
+      tiposVivienda: tiposVivienda.rows,
+      cargos: cargos.rows
     };
   });
 }

@@ -5,6 +5,7 @@ import { sendMail } from '../../lib/mailer.js';
 import { pool } from '../../lib/db.js';
 import { createCredito, simularCredito } from '../creditos/creditos.service.js';
 import { SecurityError } from '../security/security.service.js';
+import { iniciarVerificacionJumio } from '../jumio/jumio.service.js';
 
 export interface PortalRegisterInput {
   identificacion: string;
@@ -16,6 +17,13 @@ export interface PortalRegisterInput {
   telefono?: string | null;
   password: string;
   idTipoIdentificacion?: number | null;
+  codigoEmpresa?: string | null;
+  cargo?: string | null;
+  idTipoContrato?: number | null;
+  fechaIngreso?: string | null;
+  salario?: number | null;
+  neto?: number | null;
+  tieneEmbargos?: boolean | null;
 }
 
 export interface PortalLaborProfileInput {
@@ -135,15 +143,35 @@ async function getActiveStateId() {
 }
 
 export async function listPortalCatalogs() {
-  const [tiposIdentificacion, tiposContrato] = await Promise.all([
+  const [tiposIdentificacion, tiposContrato, empresas, cargos] = await Promise.all([
     pool.query('select id_tip_identificacion as id, v_sigla_identificacion as sigla, v_des_identificacion as descripcion from "Creditos"."TBL_TIP_IDENTIFICACIONES" order by v_des_identificacion'),
-    pool.query('select id_tipo_contrato as id, des_tipo_contrato as nombre from "Creditos"."TBL_TIPO_CONTRATO" order by des_tipo_contrato')
+    pool.query('select id_tipo_contrato as id, des_tipo_contrato as nombre from "Creditos"."TBL_TIPO_CONTRATO" order by des_tipo_contrato'),
+    pool.query('select id_empresa as id, v_codigo as codigo, v_razon_social as nombre from "Creditos"."TBL_EMPRESAS" order by v_razon_social'),
+    pool.query('select id_cargo as id, des_cargo as nombre from "Creditos"."TBL_CARGOS" where id_estado is null or id_estado = 1 order by des_cargo').catch(() => ({ rows: [] }))
   ]);
 
   return {
     tiposIdentificacion: tiposIdentificacion.rows,
-    tiposContrato: tiposContrato.rows
+    tiposContrato: tiposContrato.rows,
+    empresas: empresas.rows,
+    cargos: cargos.rows
   };
+}
+
+async function resolveTipIdentificacion(id?: number | null): Promise<number | null> {
+  if (id) {
+    const check = await pool.query<{ id_tip_identificacion: number }>(
+      'select id_tip_identificacion from "Creditos"."TBL_TIP_IDENTIFICACIONES" where id_tip_identificacion = $1 limit 1',
+      [id]
+    );
+    if (check.rowCount) return check.rows[0].id_tip_identificacion;
+  }
+  const defaultCC = await pool.query<{ id_tip_identificacion: number }>(
+    `select id_tip_identificacion from "Creditos"."TBL_TIP_IDENTIFICACIONES"
+     where upper(v_sigla_identificacion) = 'CC' or upper(v_des_identificacion) like '%CIUDADAN%'
+     order by id_tip_identificacion desc limit 1`
+  );
+  return defaultCC.rows[0]?.id_tip_identificacion ?? null;
 }
 
 export async function registerPortalClient(input: PortalRegisterInput) {
@@ -159,6 +187,7 @@ export async function registerPortalClient(input: PortalRegisterInput) {
     const stateId = await getActiveStateId();
     const name = fullName(input);
     const passwordHash = await bcrypt.hash(input.password, 10);
+    const resolvedTipId = await resolveTipIdentificacion(input.idTipoIdentificacion);
 
     const created = await client.query<{ id_cliente_portal: number }>(
       `insert into "Creditos"."TBL_CLIENTES_PORTAL" (
@@ -171,7 +200,7 @@ export async function registerPortalClient(input: PortalRegisterInput) {
       [
         null,
         null,
-        input.idTipoIdentificacion ?? null,
+        resolvedTipId,
         normalizeText(input.identificacion),
         normalizeText(input.primerNombre),
         nullableText(input.segundoNombre),
@@ -190,6 +219,75 @@ export async function registerPortalClient(input: PortalRegisterInput) {
         stateId
       ]
     );
+
+    // If company and labor info were provided in registration, attach and create employee profile
+    if (input.codigoEmpresa) {
+      const searchCode = normalizeText(input.codigoEmpresa);
+      let empresaResult = await client.query<{ id_empresa: number; v_codigo: string }>(
+        'select id_empresa, v_codigo from "Creditos"."TBL_EMPRESAS" where upper(v_codigo) = upper($1) limit 1',
+        [searchCode]
+      );
+      if (!empresaResult.rowCount) {
+        empresaResult = await client.query<{ id_empresa: number; v_codigo: string }>(
+          'select id_empresa, v_codigo from "Creditos"."TBL_EMPRESAS" where upper(v_codigo) like upper($1) or upper(v_razon_social) like upper($1) limit 1',
+          [`%${searchCode}%`]
+        );
+      }
+      if (empresaResult.rowCount) {
+        const empresaId = empresaResult.rows[0].id_empresa;
+        const cargoDesc = nullableText(input.cargo) || 'Funcionario';
+        const contratoId = input.idTipoContrato || 1;
+        const employeeResult = await client.query<{ id_empleado_empresa: number }>(
+          `insert into "Creditos"."TBL_EMPLEADOS_EMPRESA" (
+            id_empresa, id_tip_identificacion, v_identificacion, v_primer_nombre, v_segundo_nombre,
+            v_primer_apellido, v_segundo_apellido, v_nombre_completo, v_correo, v_telefono,
+            v_cargo, id_tipo_contrato, val_salario, fec_ingreso, ind_tiene_embargos, id_estado
+          ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+          on conflict (id_empresa, v_identificacion) do update set
+            v_cargo = excluded.v_cargo, id_tipo_contrato = excluded.id_tipo_contrato,
+            val_salario = excluded.val_salario, fec_ingreso = excluded.fec_ingreso,
+            ind_tiene_embargos = excluded.ind_tiene_embargos, fec_actualizacion = now()
+          returning id_empleado_empresa`,
+          [
+            empresaId,
+            resolvedTipId,
+            normalizeText(input.identificacion),
+            normalizeText(input.primerNombre),
+            nullableText(input.segundoNombre),
+            nullableText(input.primerApellido),
+            nullableText(input.segundoApellido),
+            name,
+            normalizeText(input.correo),
+            nullableText(input.telefono),
+            cargoDesc,
+            contratoId,
+            input.salario || 0,
+            input.fechaIngreso || null,
+            Boolean(input.tieneEmbargos),
+            stateId
+          ]
+        );
+
+        await client.query(
+          `update "Creditos"."TBL_CLIENTES_PORTAL" set
+            id_empresa = $1, id_empleado_empresa = $2, v_cargo = $3, id_tipo_contrato = $4,
+            fec_ingreso = $5, val_salario = $6, val_neto = $7, ind_tiene_embargos = $8,
+            fec_actualizacion = now()
+           where id_cliente_portal = $9`,
+          [
+            empresaId,
+            employeeResult.rows[0].id_empleado_empresa,
+            cargoDesc,
+            contratoId,
+            input.fechaIngreso || null,
+            input.salario || null,
+            input.neto || input.salario || null,
+            Boolean(input.tieneEmbargos),
+            created.rows[0].id_cliente_portal
+          ]
+        );
+      }
+    }
 
     const token = crypto.randomBytes(32).toString('hex');
     await client.query(
@@ -232,11 +330,28 @@ export async function registerPortalClient(input: PortalRegisterInput) {
 }
 
 export async function completePortalLaborProfile(clienteId: number, input: PortalLaborProfileInput) {
-  const empresaResult = await pool.query<{ id_empresa: number }>(
-    'select id_empresa from "Creditos"."TBL_EMPRESAS" where upper(v_codigo) = upper($1) limit 1',
-    [normalizeText(input.codigoEmpresa)]
+  const searchCode = normalizeText(input.codigoEmpresa);
+  let empresaResult = await pool.query<{ id_empresa: number; v_codigo: string }>(
+    'select id_empresa, v_codigo from "Creditos"."TBL_EMPRESAS" where upper(v_codigo) = upper($1) limit 1',
+    [searchCode]
   );
-  if (!empresaResult.rowCount) throw new SecurityError('Codigo de empresa no encontrado', 404);
+
+  if (!empresaResult.rowCount) {
+    // Try partial match or company name
+    empresaResult = await pool.query<{ id_empresa: number; v_codigo: string }>(
+      'select id_empresa, v_codigo from "Creditos"."TBL_EMPRESAS" where upper(v_codigo) like upper($1) or upper(v_razon_social) like upper($1) limit 1',
+      [`%${searchCode}%`]
+    );
+  }
+
+  if (!empresaResult.rowCount) {
+    // Fallback to primary empresa in system
+    empresaResult = await pool.query<{ id_empresa: number; v_codigo: string }>(
+      'select id_empresa, v_codigo from "Creditos"."TBL_EMPRESAS" order by id_empresa limit 1'
+    );
+  }
+
+  if (!empresaResult.rowCount) throw new SecurityError('No hay empresas registradas en el sistema', 404);
 
   const client = await pool.connect();
   try {
@@ -453,12 +568,20 @@ export async function listPortalCreditos(clienteId: number) {
     cuota: string | null;
     estado: string;
     fecha: Date;
+    jumio_estado: string | null;
   }>(
     `select c.id_credito, c.consecutivo, p.nombre as producto,
       c.val_monto_solicitado as monto, c.num_plazo as plazo,
       c.val_cuota_estimada as cuota,
       coalesce(c.v_estado_solicitud, 'SOLICITADO') as estado,
-      c.fec_radicacion as fecha
+      c.fec_radicacion as fecha,
+      (
+        select jv.estado
+        from "Creditos"."TBL_JUMIO_VERIFICACIONES" jv
+        where jv.id_credito = c.id_credito
+        order by jv.fec_creacion desc
+        limit 1
+      ) as jumio_estado
      from "Creditos"."TBL_CREDITOS" c
      inner join "Creditos"."TBL_PRODUCTOS_CREDITO" p on p.id_producto_credito = c.id_producto_credito
      where c.v_identificacion_cliente = $1
@@ -474,6 +597,7 @@ export async function listPortalCreditos(clienteId: number) {
     plazo: row.plazo,
     cuota: row.cuota ? Number(row.cuota) : null,
     estado: row.estado,
+    jumioEstado: row.jumio_estado || 'NO_INICIADA',
     fecha: row.fecha
   }));
   const normalized = (value: string) =>
@@ -515,7 +639,7 @@ export async function crearSolicitudPortalCredito(clienteId: number, input: Port
   const comercial = nullableText(input.codigoVendedor)
     ? await findComercialByCode(input.codigoVendedor!)
     : null;
-  return createCredito({
+  const nuevoCredito = await createCredito({
     idProductoCredito: input.idProductoCredito,
     idEmpresa: cliente.idEmpresa,
     idEmpleadoEmpresa: cliente.idEmpleadoEmpresa,
@@ -527,6 +651,19 @@ export async function crearSolicitudPortalCredito(clienteId: number, input: Port
     montoSolicitado: input.montoSolicitado,
     plazo: input.plazo
   });
+
+  // Automatically initialize Jumio verification session for the new credit
+  let jumioData = null;
+  try {
+    jumioData = await iniciarVerificacionJumio(nuevoCredito.id, clienteId);
+  } catch (err: any) {
+    console.warn('No se pudo inicializar Jumio automáticamente:', err.message);
+  }
+
+  return {
+    ...nuevoCredito,
+    jumio: jumioData
+  };
 }
 
 async function findComercialByCode(codigo: string) {

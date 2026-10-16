@@ -121,6 +121,9 @@ function mapLibranzera(row) {
 function mapComercial(row) {
     return {
         id: row.id_comercial,
+        idFinanciera: row.id_financiera,
+        financiera: row.financiera,
+        siglaFinanciera: row.sigla_financiera,
         idLibranzera: row.id_libranzera,
         libranzera: row.libranzera,
         identificacion: row.v_identificacion,
@@ -162,26 +165,31 @@ const libranzeraSelect = `
   left join "Creditos"."TBL_TIPO_CUENTAS" tc on tc.id_tipo_cuenta = lc.id_tipo_cuenta
 `;
 const comercialSelect = `
-  select co.*, l.v_razon_social as libranzera, ti.v_sigla_identificacion as tipo_identificacion,
+  select co.*,
+    coalesce(fin.v_razon_social, l.v_razon_social, 'Sin asignar') as financiera,
+    fin.v_sigla as sigla_financiera,
+    coalesce(l.v_razon_social, fin.v_razon_social, 'Sin asignar') as libranzera,
+    ti.v_sigla_identificacion as tipo_identificacion,
     rv.des_rol_vendedor as rol_vendedor, fc.des_formula as formula_comercial,
     ci.v_nom_ciudad as ciudad, b.des_banco as banco, tc.des_tipo_cuenta as tipo_cuenta,
     est.v_descripcion as estado
   from (
-    select id_asesor as id_comercial, id_libranzera, v_identificacion, v_primer_nombre, v_seg_nombre,
+    select id_asesor as id_comercial, id_financiera, id_libranzera, v_identificacion, v_primer_nombre, v_seg_nombre,
       v_primer_apell, v_seg_apell, v_nombre_completo, fec_nacimiento, v_telefono, v_correo,
       v_codigo_vendedor, id_tip_identificacion, id_rol_vendedor, id_formula_comercial,
       tipo_comision, valor_comision, v_direccion, id_ciudad, id_banco, id_tipo_cuenta,
       v_num_cuenta, id_estado
     from "Creditos"."TBL_ASESORES"
     union all
-    select id_comercial, id_libranzera, v_identificacion, v_primer_nombre, v_seg_nombre,
+    select id_comercial, id_financiera, id_libranzera, v_identificacion, v_primer_nombre, v_seg_nombre,
       v_primer_apell, v_seg_apell, v_nombre_completo, fec_nacimiento, v_telefono, v_correo,
       v_codigo_vendedor, id_tip_identificacion, id_rol_vendedor, id_formula_comercial,
       null::varchar as tipo_comision, null::numeric as valor_comision,
       v_direccion, id_ciudad, id_banco, id_tipo_cuenta, v_num_cuenta, id_estado
     from "Creditos"."TBL_COMERCIALES"
   ) co
-  inner join "Creditos"."TBL_LIBRANZERAS" l on l.id_libranzera = co.id_libranzera
+  left join "Creditos"."TBL_FINANCIERA" fin on fin.id_financiera = co.id_financiera
+  left join "Creditos"."TBL_LIBRANZERAS" l on (l.id_libranzera = co.id_libranzera or (co.id_libranzera is null and l.id_libranzera = fin.id_libranzera))
   inner join "Creditos"."TBL_TIP_IDENTIFICACIONES" ti on ti.id_tip_identificacion = co.id_tip_identificacion
   left join "Creditos"."TBL_ROLES_VENDEDOR" rv on rv.id_rol_vendedor = co.id_rol_vendedor
   left join "Creditos"."TBL_FORMULAS_COMERCIAL" fc on fc.id_formula_comercial = co.id_formula_comercial
@@ -193,13 +201,14 @@ const comercialSelect = `
 export async function listComercialesCatalogs() {
     return withClient(async (client) => {
         await ensureAsesoresTables(client);
-        const [bancos, tiposCuenta, rolesVendedor, formulas, libranzeras, generos] = await Promise.all([
+        const [bancos, tiposCuenta, rolesVendedor, formulas, libranzeras, generos, financieras] = await Promise.all([
             client.query('select id_banco as id, des_banco as nombre from "Creditos"."TBL_BANCOS" order by des_banco'),
             client.query('select id_tipo_cuenta as id, des_tipo_cuenta as nombre from "Creditos"."TBL_TIPO_CUENTAS" order by des_tipo_cuenta'),
             client.query('select id_rol_vendedor as id, des_rol_vendedor as nombre from "Creditos"."TBL_ROLES_VENDEDOR" order by des_rol_vendedor'),
             client.query('select id_formula_comercial as id, des_formula as nombre from "Creditos"."TBL_FORMULAS_COMERCIAL" order by des_formula'),
             client.query('select id_libranzera as id, v_razon_social as nombre from "Creditos"."TBL_LIBRANZERAS" order by v_razon_social'),
-            client.query('select cod_genero as id, des_genero as nombre from "Creditos"."TBL_GENEROS" order by des_genero')
+            client.query('select cod_genero as id, des_genero as nombre from "Creditos"."TBL_GENEROS" order by des_genero'),
+            client.query('select id_financiera as id, coalesce(v_sigla || \' - \' || v_razon_social, v_razon_social) as nombre from "Creditos"."TBL_FINANCIERA" where ind_activo = true order by v_razon_social')
         ]);
         return {
             bancos: bancos.rows,
@@ -207,7 +216,8 @@ export async function listComercialesCatalogs() {
             rolesVendedor: rolesVendedor.rows,
             formulas: formulas.rows,
             libranzeras: libranzeras.rows,
-            generos: generos.rows
+            generos: generos.rows,
+            financieras: financieras.rows
         };
     });
 }
@@ -283,22 +293,43 @@ export async function listComerciales() {
 export async function createComercial(input) {
     return withClient(async (client) => {
         await ensureAsesoresTables(client);
-        const exists = await client.query('select 1 from "Creditos"."TBL_LIBRANZERAS" where id_libranzera = $1 limit 1', [input.idLibranzera]);
-        if (!exists.rowCount)
-            throw new SecurityError('Libranzera no encontrada', 404);
+        let idFinanciera = input.idFinanciera ?? null;
+        let idLibranzera = input.idLibranzera ?? null;
+        if (idFinanciera) {
+            const fin = await client.query('select id_financiera, id_libranzera from "Creditos"."TBL_FINANCIERA" where id_financiera = $1 limit 1', [idFinanciera]);
+            if (!fin.rowCount)
+                throw new SecurityError('Entidad financiera no encontrada', 404);
+            if (!idLibranzera && fin.rows[0].id_libranzera) {
+                idLibranzera = fin.rows[0].id_libranzera;
+            }
+        }
+        else if (idLibranzera) {
+            const fin = await client.query('select id_financiera from "Creditos"."TBL_FINANCIERA" where id_libranzera = $1 limit 1', [idLibranzera]);
+            if (fin.rowCount) {
+                idFinanciera = fin.rows[0].id_financiera;
+            }
+        }
+        if (!idFinanciera && !idLibranzera) {
+            const defaultFin = await client.query('select id_financiera, id_libranzera from "Creditos"."TBL_FINANCIERA" where ind_activo = true order by id_financiera limit 1');
+            if (defaultFin.rowCount) {
+                idFinanciera = defaultFin.rows[0].id_financiera;
+                idLibranzera = defaultFin.rows[0].id_libranzera;
+            }
+        }
         const stateId = input.idEstado ?? await getActiveStateId(client);
         const created = await client.query(`insert into "Creditos"."TBL_ASESORES" (
-        id_libranzera, v_identificacion, v_primer_nombre, v_seg_nombre, v_primer_apell, v_seg_apell,
+        id_financiera, id_libranzera, v_identificacion, v_primer_nombre, v_seg_nombre, v_primer_apell, v_seg_apell,
         v_nombre_completo, fec_nacimiento, v_telefono, v_correo, v_codigo_vendedor,
         id_tip_identificacion, id_rol_vendedor, id_formula_comercial, tipo_comision, valor_comision, v_direccion, id_ciudad,
         id_banco, id_tipo_cuenta, v_num_cuenta, id_estado
       ) values (
-        $1, $2, $3, $4, $5, $6,
-        $7, $8, $9, $10, $11,
-        $12, $13, $14, $15, $16, $17, $18,
-        $19, $20, $21, $22
+        $1, $2, $3, $4, $5, $6, $7,
+        $8, $9, $10, $11, $12,
+        $13, $14, $15, $16, $17, $18, $19,
+        $20, $21, $22, $23
       ) returning id_asesor as id_comercial`, [
-            input.idLibranzera,
+            idFinanciera,
+            idLibranzera,
             normalizeText(input.identificacion),
             normalizeText(input.primerNombre),
             nullableText(input.segundoNombre),
@@ -332,35 +363,48 @@ export async function updateComercial(comercialId, input) {
         if (!exists.rowCount) {
             throw new SecurityError('Este asesor no existe en TBL_ASESORES o es un registro antiguo no editable desde esta pantalla', 404);
         }
-        const libranzera = await client.query('select 1 from "Creditos"."TBL_LIBRANZERAS" where id_libranzera = $1 limit 1', [input.idLibranzera]);
-        if (!libranzera.rowCount)
-            throw new SecurityError('Libranzera no encontrada', 404);
+        let idFinanciera = input.idFinanciera ?? null;
+        let idLibranzera = input.idLibranzera ?? null;
+        if (idFinanciera) {
+            const fin = await client.query('select id_financiera, id_libranzera from "Creditos"."TBL_FINANCIERA" where id_financiera = $1 limit 1', [idFinanciera]);
+            if (fin.rowCount && !idLibranzera) {
+                idLibranzera = fin.rows[0].id_libranzera;
+            }
+        }
+        else if (idLibranzera) {
+            const fin = await client.query('select id_financiera from "Creditos"."TBL_FINANCIERA" where id_libranzera = $1 limit 1', [idLibranzera]);
+            if (fin.rowCount) {
+                idFinanciera = fin.rows[0].id_financiera;
+            }
+        }
         await client.query(`update "Creditos"."TBL_ASESORES"
-       set id_libranzera = $2,
-           v_identificacion = $3,
-           v_primer_nombre = $4,
-           v_seg_nombre = $5,
-           v_primer_apell = $6,
-           v_seg_apell = $7,
-           v_nombre_completo = $8,
-           fec_nacimiento = $9,
-           v_telefono = $10,
-           v_correo = $11,
-           v_codigo_vendedor = $12,
-           id_tip_identificacion = $13,
-           id_rol_vendedor = $14,
-           id_formula_comercial = $15,
-           tipo_comision = $16,
-           valor_comision = $17,
-           v_direccion = $18,
-           id_ciudad = $19,
-           id_banco = $20,
-           id_tipo_cuenta = $21,
-           v_num_cuenta = $22,
+       set id_financiera = coalesce($2, id_financiera),
+           id_libranzera = coalesce($3, id_libranzera),
+           v_identificacion = $4,
+           v_primer_nombre = $5,
+           v_seg_nombre = $6,
+           v_primer_apell = $7,
+           v_seg_apell = $8,
+           v_nombre_completo = $9,
+           fec_nacimiento = $10,
+           v_telefono = $11,
+           v_correo = $12,
+           v_codigo_vendedor = $13,
+           id_tip_identificacion = $14,
+           id_rol_vendedor = $15,
+           id_formula_comercial = $16,
+           tipo_comision = $17,
+           valor_comision = $18,
+           v_direccion = $19,
+           id_ciudad = $20,
+           id_banco = $21,
+           id_tipo_cuenta = $22,
+           v_num_cuenta = $23,
            fec_actualizacion = now()
        where id_asesor = $1`, [
             comercialId,
-            input.idLibranzera,
+            idFinanciera,
+            idLibranzera,
             normalizeText(input.identificacion),
             normalizeText(input.primerNombre),
             nullableText(input.segundoNombre),

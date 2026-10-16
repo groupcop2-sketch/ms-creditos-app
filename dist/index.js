@@ -18,11 +18,19 @@ import { comercialesRoutes } from './modules/comerciales/comerciales.routes.js';
 import { creditosRoutes } from './modules/creditos/creditos.routes.js';
 import { portalRoutes } from './modules/portal/portal.routes.js';
 import { productosCreditosRoutes } from './modules/productos-creditos/productos-creditos.routes.js';
+import { configuracionFinancieraRoutes } from './modules/productos-creditos/configuracion-financiera.routes.js';
 import { dashboardRoutes } from './modules/dashboard/dashboard.routes.js';
 import { documentosRoutes } from './modules/documentos/documentos.routes.js';
 import { firmasRoutes } from './modules/firmas/firmas.routes.js';
+import { docusignRoutes } from './modules/firmas/docusign.routes.js';
+import { jumioRoutes } from './modules/jumio/jumio.routes.js';
+import { diditRoutes } from './modules/didit/didit.routes.js';
+import { financierasRoutes } from './modules/financieras/financieras.routes.js';
 async function main() {
-    const app = Fastify({ logger: true });
+    const app = Fastify({
+        logger: true,
+        bodyLimit: 30 * 1024 * 1024 // 30MB for document & selfie image uploads
+    });
     app.setErrorHandler((error, request, reply) => {
         if (error instanceof SecurityError) {
             return reply.code(error.statusCode).send({ message: error.message });
@@ -36,11 +44,45 @@ async function main() {
         app.log.error(error);
         const internalMessage = error instanceof Error ? error.message : 'Error interno del servidor';
         return reply.code(500).send({
-            message: process.env.NODE_ENV === 'production' ? 'Error interno del servidor' : internalMessage
+            message: internalMessage
         });
     });
+    const getAllowedOrigins = () => {
+        const raw = env.CORS_ORIGIN.split(',').map((item) => item.trim()).filter(Boolean);
+        const origins = new Set();
+        for (const item of raw) {
+            if (item === '*')
+                return '*';
+            try {
+                origins.add(new URL(item).origin);
+            }
+            catch {
+                origins.add(item);
+            }
+        }
+        return Array.from(origins);
+    };
+    const allowedOrigins = getAllowedOrigins();
     await app.register(cors, {
-        origin: env.CORS_ORIGIN.split(',').map((item) => item.trim())
+        origin: (origin, cb) => {
+            if (!origin) {
+                cb(null, true);
+                return;
+            }
+            if (allowedOrigins === '*' || allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
+                cb(null, true);
+                return;
+            }
+            if (origin.endsWith('.vercel.app') || origin.startsWith('http://localhost:')) {
+                cb(null, true);
+                return;
+            }
+            cb(null, true);
+        },
+        methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+        allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+        credentials: true,
+        optionsSuccessStatus: 204
     });
     await registerAuthPlugin(app);
     await app.register(multipart, { limits: { fileSize: 20 * 1024 * 1024 } });
@@ -81,11 +123,21 @@ async function main() {
     await app.register(aliadosRoutes, { prefix: '/api/v1/aliados' });
     await app.register(comercialesRoutes, { prefix: '/api/v1/comerciales' });
     await app.register(productosCreditosRoutes, { prefix: '/api/v1/productos-creditos' });
+    await app.register(configuracionFinancieraRoutes, { prefix: '/api/v1/productos-creditos' });
+    await app.register(configuracionFinancieraRoutes, { prefix: '/api/v1' });
     await app.register(creditosRoutes, { prefix: '/api/v1/creditos' });
     await app.register(portalRoutes, { prefix: '/api/v1/portal' });
     await app.register(dashboardRoutes, { prefix: '/api/v1/dashboard' });
     await app.register(documentosRoutes, { prefix: '/api/v1/documentos' });
     await app.register(firmasRoutes, { prefix: '/api/v1/firmas' });
+    await app.register(docusignRoutes, { prefix: '/api/v1/firmas/docusign' });
+    await app.register(docusignRoutes, { prefix: '/api/v1/docusign' });
+    await app.register(jumioRoutes, { prefix: '/api/v1/portal/jumio' });
+    await app.register(diditRoutes, { prefix: '/api/v1/portal/didit' });
+    await app.register(diditRoutes, { prefix: '/api/v1/didit' });
+    await app.register(diditRoutes, { prefix: '/api' });
+    await app.register(financierasRoutes, { prefix: '/api/v1/financieras' });
+    await app.register(financierasRoutes, { prefix: '/api/v1/integraciones-financiera' });
     app.get('/api/v1', async () => ({
         name: 'creditos-api',
         version: '0.1.0'
