@@ -1,4 +1,3 @@
-import { simularCredito } from '../creditos/creditos.service.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { SecurityError } from '../security/security.service.js';
@@ -143,9 +142,10 @@ export async function portalRoutes(app: FastifyInstance) {
     return completePortalLaborProfile(user.clienteId, body);
   });
 
+  /** Simulación pública (landing / onboarding): incluye plan de amortización */
   app.post('/simulacion', async (request) => {
-    const body = creditoPortalSchema.pick({ idProductoCredito: true, montoSolicitado: true, plazo: true }).parse(request.body);
-    return simularCredito(body);
+    const body = simulacionPublicaSchema.parse(request.body);
+    return simularPortalCreditoPublico(body);
   });
 
   app.get('/productos', async () => {
@@ -155,12 +155,6 @@ export async function portalRoutes(app: FastifyInstance) {
   app.get('/creditos', { preHandler: [authenticatePortal] }, async (request) => {
     const user = request.user as unknown as PortalJwtPayload;
     return listPortalCreditos(user.clienteId);
-  });
-
-  /** Simulación pública (landing / onboarding): incluye plan de amortización */
-  app.post('/simulacion', async (request) => {
-    const body = simulacionPublicaSchema.parse(request.body);
-    return simularPortalCreditoPublico(body);
   });
 
   app.post('/simular', { preHandler: [authenticatePortal] }, async (request) => {
