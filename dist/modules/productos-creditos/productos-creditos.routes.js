@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { createProductoAtributo, createTipoCalculoCredito, createParametroFinanciero, createProductoCredito, createProductoCreditoVersion, createProductoDocumento, saveProductoConvenio, createProductoEtapa, deleteProductoAtributo, deleteProductoCredito, deleteProductoConvenio, deleteProductoDocumento, deleteProductoEtapa, listParametrosFinancieros, listProductoAtributos, listProductoConvenios, listProductoDocumentos, listProductoEtapas, listProductosCredito, listProductosCreditoCatalogs, updateProductoAtributo, updateProductoCredito, updateProductoCreditoEstado, updateProductoDocumento, updateProductoEtapa } from './productos-creditos.service.js';
+import { createProductoAtributo, createTipoCalculoCredito, createParametroFinanciero, createProductoCredito, createProductoCreditoVersion, createProductoDocumento, saveProductoConvenio, createProductoEtapa, deleteProductoAtributo, deleteProductoCredito, deleteProductoConvenio, deleteProductoDocumento, deleteProductoEtapa, listParametrosFinancieros, listProductoAtributos, listProductoConvenios, listProductoDocumentos, listProductoEtapas, listProductosCredito, listProductosCreditoCatalogs, updateProductoAtributo, updateProductoCredito, updateProductoCreditoEstado, updateProductoDocumento, updateProductoEtapa, listTblAtributos, createTblAtributo, updateTblAtributo, updateTblAtributoEstado, deleteTblAtributo } from './productos-creditos.service.js';
 const productoSchema = z.object({
     nombre: z.string().min(1),
     descripcion: z.string().trim().nullable().optional(),
@@ -102,6 +102,22 @@ const etapaSchema = z.object({
     responsable: z.string().trim().nullable().optional(),
     slaHoras: z.coerce.number().int().positive().nullable().optional()
 });
+const tblAtributoSchema = z.object({
+    nombre: z.string().min(1, 'El nombre del atributo es obligatorio'),
+    descripcion: z.string().trim().nullable().optional(),
+    aplicaA: z.string().trim().nullable().optional(),
+    tipoFormula: z.string().trim().nullable().optional(),
+    valorDefault: z.coerce.number().nullable().optional(),
+    valor2Default: z.coerce.number().nullable().optional(),
+    porcentajeDefault: z.coerce.number().nullable().optional(),
+    minimoDefault: z.coerce.number().nullable().optional(),
+    maximoDefault: z.coerce.number().nullable().optional(),
+    proveedorDefault: z.string().trim().nullable().optional(),
+    prioridadDefault: z.coerce.number().int().nullable().optional(),
+    aplicaIvaDefault: z.boolean().nullable().optional(),
+    obligatorioDefault: z.boolean().nullable().optional(),
+    activo: z.boolean().nullable().optional()
+});
 function requirePermission(permission) {
     return async (request, reply) => {
         const user = request.user;
@@ -112,6 +128,27 @@ function requirePermission(permission) {
 }
 export async function productosCreditosRoutes(app) {
     app.get('/catalogos', { preHandler: [app.authenticate] }, async () => listProductosCreditoCatalogs());
+    app.get('/atributos-catalogo', { preHandler: [app.authenticate] }, async () => {
+        return listTblAtributos();
+    });
+    app.post('/atributos-catalogo', { preHandler: [app.authenticate] }, async (request) => {
+        const body = tblAtributoSchema.parse(request.body);
+        return createTblAtributo(body);
+    });
+    app.put('/atributos-catalogo/:id', { preHandler: [app.authenticate] }, async (request) => {
+        const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+        const body = tblAtributoSchema.parse(request.body);
+        return updateTblAtributo(params.id, body);
+    });
+    app.patch('/atributos-catalogo/:id/estado', { preHandler: [app.authenticate] }, async (request) => {
+        const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+        const body = z.object({ activo: z.boolean() }).parse(request.body);
+        return updateTblAtributoEstado(params.id, body.activo);
+    });
+    app.delete('/atributos-catalogo/:id', { preHandler: [app.authenticate] }, async (request) => {
+        const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+        return deleteTblAtributo(params.id);
+    });
     app.get('/parametros', { preHandler: [app.authenticate] }, async () => listParametrosFinancieros());
     app.post('/parametros', { preHandler: [app.authenticate, requirePermission('productos-creditos:create')] }, async (request) => {
         const body = parametroSchema.parse(request.body);

@@ -1,4 +1,4 @@
-﻿import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { JwtUserPayload } from '../../types/auth.js';
 import {
@@ -26,7 +26,12 @@ import {
   updateProductoCredito,
   updateProductoCreditoEstado,
   updateProductoDocumento,
-  updateProductoEtapa
+  updateProductoEtapa,
+  listTblAtributos,
+  createTblAtributo,
+  updateTblAtributo,
+  updateTblAtributoEstado,
+  deleteTblAtributo
 } from './productos-creditos.service.js';
 
 const productoSchema = z.object({
@@ -139,6 +144,23 @@ const etapaSchema = z.object({
   slaHoras: z.coerce.number().int().positive().nullable().optional()
 });
 
+const tblAtributoSchema = z.object({
+  nombre: z.string().min(1, 'El nombre del atributo es obligatorio'),
+  descripcion: z.string().trim().nullable().optional(),
+  aplicaA: z.string().trim().nullable().optional(),
+  tipoFormula: z.string().trim().nullable().optional(),
+  valorDefault: z.coerce.number().nullable().optional(),
+  valor2Default: z.coerce.number().nullable().optional(),
+  porcentajeDefault: z.coerce.number().nullable().optional(),
+  minimoDefault: z.coerce.number().nullable().optional(),
+  maximoDefault: z.coerce.number().nullable().optional(),
+  proveedorDefault: z.string().trim().nullable().optional(),
+  prioridadDefault: z.coerce.number().int().nullable().optional(),
+  aplicaIvaDefault: z.boolean().nullable().optional(),
+  obligatorioDefault: z.boolean().nullable().optional(),
+  activo: z.boolean().nullable().optional()
+});
+
 function requirePermission(permission: string) {
   return async (request: FastifyRequest, reply: FastifyReply) => {
     const user = request.user as JwtUserPayload | undefined;
@@ -150,6 +172,32 @@ function requirePermission(permission: string) {
 
 export async function productosCreditosRoutes(app: FastifyInstance) {
   app.get('/catalogos', { preHandler: [app.authenticate] }, async () => listProductosCreditoCatalogs());
+
+  app.get('/atributos-catalogo', { preHandler: [app.authenticate] }, async () => {
+    return listTblAtributos();
+  });
+
+  app.post('/atributos-catalogo', { preHandler: [app.authenticate] }, async (request) => {
+    const body = tblAtributoSchema.parse(request.body);
+    return createTblAtributo(body);
+  });
+
+  app.put('/atributos-catalogo/:id', { preHandler: [app.authenticate] }, async (request) => {
+    const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    const body = tblAtributoSchema.parse(request.body);
+    return updateTblAtributo(params.id, body);
+  });
+
+  app.patch('/atributos-catalogo/:id/estado', { preHandler: [app.authenticate] }, async (request) => {
+    const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    const body = z.object({ activo: z.boolean() }).parse(request.body);
+    return updateTblAtributoEstado(params.id, body.activo);
+  });
+
+  app.delete('/atributos-catalogo/:id', { preHandler: [app.authenticate] }, async (request) => {
+    const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    return deleteTblAtributo(params.id);
+  });
 
   app.get('/parametros', { preHandler: [app.authenticate] }, async () => listParametrosFinancieros());
 

@@ -173,6 +173,8 @@ interface ProductoRow {
 
 interface AtributoRow {
   id_producto_atributo: number;
+  id_tipo_atributo?: number;
+  id_tipo_calculo?: number;
   tipo_atributo: string;
   tipo_calculo: string;
   nombre: string;
@@ -249,6 +251,28 @@ async function ensureFormulaColumns(client: ClientLike) {
     alter table "Creditos"."TBL_PRODUCTO_CREDITO_ATRIBUTOS"
       add column if not exists valor2 numeric(18,6) null
   `);
+
+  const seedFormulas = [
+    { nombre: 'SEGURO DE VIDA', codigo: 'SEG_VIDA', base: 'VALOR_CREDITO', op: 'BASE_POR_VALOR_DIV_VALOR2', rv: true, rv2: true, rp: false },
+    { nombre: 'SEGURO DE VIDA DEUDORES', codigo: 'SEG_VIDA_DEUD', base: 'VALOR_CREDITO', op: 'BASE_POR_VALOR_DIV_VALOR2', rv: true, rv2: true, rp: false },
+    { nombre: 'FIANZA', codigo: 'FIANZA', base: 'VALOR_CREDITO', op: 'PORCENTAJE', rv: false, rv2: false, rp: true },
+    { nombre: 'SMMLV * %', codigo: 'SMMLV_PORC', base: 'SMLMV', op: 'PORCENTAJE', rv: false, rv2: false, rp: true },
+    { nombre: 'VALOR CRÉDITO * %', codigo: 'VAL_CRED_PORC', base: 'VALOR_CREDITO', op: 'PORCENTAJE', rv: false, rv2: false, rp: true },
+    { nombre: 'VALOR SALDO * %', codigo: 'VAL_SALDO_PORC', base: 'SALDO', op: 'PORCENTAJE', rv: false, rv2: false, rp: true },
+    { nombre: '(VALOR DESEMBOLSO * VALOR) / VALOR2', codigo: 'DESEMB_DIV', base: 'VALOR_DESEMBOLSO', op: 'BASE_POR_VALOR_DIV_VALOR2', rv: true, rv2: true, rp: false },
+    { nombre: 'Base * valor / valor2', codigo: 'BASE_MULT_DIV', base: 'VALOR_CREDITO', op: 'BASE_POR_VALOR_DIV_VALOR2', rv: true, rv2: true, rp: false }
+  ];
+
+  for (const sf of seedFormulas) {
+    await client.query(`
+      insert into "Creditos"."TBL_TIPOS_CALCULO_CREDITO" (des_tipo_calculo, codigo, base_calculo, operacion, requiere_valor, requiere_valor2, requiere_porcentaje, aplica_minimo, aplica_maximo, activo)
+      select $1::varchar, $2::varchar, $3::varchar, $4::varchar, $5::boolean, $6::boolean, $7::boolean, true, true, true
+      where not exists (
+        select 1 from "Creditos"."TBL_TIPOS_CALCULO_CREDITO"
+        where upper(des_tipo_calculo) = upper($1::varchar) or upper(coalesce(codigo, '')) = upper($2::varchar)
+      )
+    `, [sf.nombre, sf.codigo, sf.base, sf.op, sf.rv, sf.rv2, sf.rp]);
+  }
 }
 
 function formulaCodeFromName(nombre: string) {
@@ -482,6 +506,7 @@ const productoSelect = `
 
 export async function listProductosCreditoCatalogs() {
   return withClient(async (client) => {
+    await ensureFormulaColumns(client);
     const [tiposCredito, tiposAtributo, tiposCalculo, documentos, etapas, libranzeras] = await Promise.all([
       client.query<CatalogRow>('select id_tipo_credito as id, des_tipo_credito as nombre from "Creditos"."TBL_TIPOS_CREDITO" order by des_tipo_credito'),
       client.query<CatalogRow>('select id_tipo_atributo as id, des_tipo_atributo as nombre from "Creditos"."TBL_TIPOS_ATRIBUTO_CREDITO" order by des_tipo_atributo'),
@@ -692,7 +717,7 @@ export async function listProductoAtributos(productoId: number) {
        where a.id_producto_credito = $1 order by a.prioridad, a.nombre`,
       [productoId]
     );
-    return result.rows.map((row) => ({ id: row.id_producto_atributo, tipoAtributo: row.tipo_atributo, tipoCalculo: row.tipo_calculo, nombre: row.nombre, valor: row.valor ? Number(row.valor) : null, porcentaje: row.porcentaje ? Number(row.porcentaje) : null, valor2: row.valor2 ? Number(row.valor2) : null, minimo: row.minimo ? Number(row.minimo) : null, maximo: row.maximo ? Number(row.maximo) : null, aplicaIva: row.aplica_iva, obligatorio: row.obligatorio, proveedor: row.proveedor, prioridad: row.prioridad }));
+    return result.rows.map((row) => ({ id: row.id_producto_atributo, idTipoAtributo: row.id_tipo_atributo, idTipoCalculo: row.id_tipo_calculo, tipoAtributo: row.tipo_atributo, tipoCalculo: row.tipo_calculo, nombre: row.nombre, valor: row.valor ? Number(row.valor) : null, porcentaje: row.porcentaje ? Number(row.porcentaje) : null, valor2: row.valor2 ? Number(row.valor2) : null, minimo: row.minimo ? Number(row.minimo) : null, maximo: row.maximo ? Number(row.maximo) : null, aplicaIva: row.aplica_iva, obligatorio: row.obligatorio, proveedor: row.proveedor, prioridad: row.prioridad }));
   });
 }
 
@@ -957,3 +982,259 @@ async function ensureProducto(client: ClientLike, productoId: number) {
   const exists = await client.query('select 1 from "Creditos"."TBL_PRODUCTOS_CREDITO" where id_producto_credito = $1 limit 1', [productoId]);
   if (!exists.rowCount) throw new SecurityError('Producto de credito no encontrado', 404);
 }
+
+export interface TblAtributoRow {
+  id: number;
+  nombre: string;
+  descripcion: string;
+  aplicaA: string;
+  tipoFormula: string;
+  valorDefault: number;
+  valor2Default?: number;
+  porcentajeDefault: number;
+  minimoDefault: number;
+  maximoDefault: number;
+  proveedorDefault: string;
+  prioridadDefault: number;
+  aplicaIvaDefault: boolean;
+  obligatorioDefault: boolean;
+  activo: boolean;
+}
+
+export interface SaveTblAtributoInput {
+  nombre: string;
+  descripcion?: string | null;
+  aplicaA?: string | null;
+  tipoFormula?: string | null;
+  valorDefault?: number | null;
+  valor2Default?: number | null;
+  porcentajeDefault?: number | null;
+  minimoDefault?: number | null;
+  maximoDefault?: number | null;
+  proveedorDefault?: string | null;
+  prioridadDefault?: number | null;
+  aplicaIvaDefault?: boolean | null;
+  obligatorioDefault?: boolean | null;
+  activo?: boolean | null;
+}
+
+async function ensureTblAtributosTable(client: ClientLike) {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS "Creditos"."tbl_atributos" (
+      id_atributo SERIAL PRIMARY KEY,
+      nombre VARCHAR(180) NOT NULL UNIQUE,
+      descripcion VARCHAR(250) NULL,
+      aplica_a VARCHAR(50) DEFAULT 'CREDITO',
+      tipo_formula VARCHAR(80) DEFAULT 'Manual',
+      valor_default NUMERIC(18,2) DEFAULT 0,
+      valor2_default NUMERIC(18,2) NULL,
+      porcentaje_default NUMERIC(10,4) DEFAULT 0,
+      minimo_default NUMERIC(18,2) DEFAULT 0,
+      maximo_default NUMERIC(18,2) DEFAULT 0,
+      proveedor_default VARCHAR(120) NULL,
+      prioridad_default INTEGER DEFAULT 1,
+      aplica_iva_default BOOLEAN DEFAULT FALSE,
+      obligatorio_default BOOLEAN DEFAULT FALSE,
+      activo BOOLEAN DEFAULT TRUE,
+      fec_creacion TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()
+    );
+  `);
+}
+
+interface TblAtributoDbRow {
+  id_atributo: number;
+  nombre: string;
+  descripcion: string | null;
+  aplica_a: string | null;
+  tipo_formula: string | null;
+  valor_default: string | number | null;
+  valor2_default: string | number | null;
+  porcentaje_default: string | number | null;
+  minimo_default: string | number | null;
+  maximo_default: string | number | null;
+  proveedor_default: string | null;
+  prioridad_default: number | null;
+  aplica_iva_default: boolean | null;
+  obligatorio_default: boolean | null;
+  activo: boolean | null;
+}
+
+function mapTblAtributo(row: TblAtributoDbRow): TblAtributoRow {
+  return {
+    id: row.id_atributo,
+    nombre: row.nombre,
+    descripcion: row.descripcion || '',
+    aplicaA: row.aplica_a || 'CREDITO',
+    tipoFormula: row.tipo_formula || 'Porcentaje',
+    valorDefault: Number(row.valor_default || 0),
+    valor2Default: row.valor2_default !== null && row.valor2_default !== undefined ? Number(row.valor2_default) : 0,
+    porcentajeDefault: Number(row.porcentaje_default || 0),
+    minimoDefault: Number(row.minimo_default || 0),
+    maximoDefault: Number(row.maximo_default || 0),
+    proveedorDefault: row.proveedor_default || '',
+    prioridadDefault: row.prioridad_default || 1,
+    aplicaIvaDefault: Boolean(row.aplica_iva_default),
+    obligatorioDefault: Boolean(row.obligatorio_default),
+    activo: row.activo !== false
+  };
+}
+
+export async function listTblAtributos(): Promise<TblAtributoRow[]> {
+  return withClient(async (client) => {
+    await ensureTblAtributosTable(client);
+    const result = await client.query<TblAtributoDbRow>(`
+      select id_atributo, nombre, descripcion, aplica_a, tipo_formula,
+             valor_default, valor2_default, porcentaje_default, minimo_default, maximo_default,
+             proveedor_default, prioridad_default, aplica_iva_default, obligatorio_default,
+             coalesce(activo, true) as activo
+      from "Creditos"."tbl_atributos"
+      order by prioridad_default asc, id_atributo asc
+    `);
+    return result.rows.map(mapTblAtributo);
+  });
+}
+
+export async function createTblAtributo(input: SaveTblAtributoInput): Promise<TblAtributoRow> {
+  return withClient(async (client) => {
+    await ensureTblAtributosTable(client);
+    const result = await client.query<TblAtributoDbRow>(`
+      insert into "Creditos"."tbl_atributos" (
+        nombre, descripcion, aplica_a, tipo_formula,
+        valor_default, valor2_default, porcentaje_default, minimo_default, maximo_default,
+        proveedor_default, prioridad_default, aplica_iva_default, obligatorio_default, activo
+      ) values (
+        $1, $2, $3, $4,
+        $5, $6, $7, $8, $9,
+        $10, $11, $12, $13, $14
+      )
+      returning id_atributo, nombre, descripcion, aplica_a, tipo_formula,
+                valor_default, valor2_default, porcentaje_default, minimo_default, maximo_default,
+                proveedor_default, prioridad_default, aplica_iva_default, obligatorio_default,
+                coalesce(activo, true) as activo
+    `, [
+      input.nombre.trim().toUpperCase(),
+      input.descripcion?.trim() || null,
+      input.aplicaA || 'CREDITO',
+      input.tipoFormula || 'Porcentaje',
+      nullableNumber(input.valorDefault) ?? 0,
+      nullableNumber(input.valor2Default) ?? 0,
+      nullableNumber(input.porcentajeDefault) ?? 0,
+      nullableNumber(input.minimoDefault) ?? 0,
+      nullableNumber(input.maximoDefault) ?? 0,
+      input.proveedorDefault?.trim() || null,
+      input.prioridadDefault ?? 1,
+      Boolean(input.aplicaIvaDefault),
+      Boolean(input.obligatorioDefault),
+      input.activo !== false
+    ]);
+
+    return mapTblAtributo(result.rows[0]);
+  });
+}
+
+export async function updateTblAtributo(id: number, input: SaveTblAtributoInput): Promise<TblAtributoRow> {
+  return withClient(async (client) => {
+    await ensureTblAtributosTable(client);
+    let result = await client.query<TblAtributoDbRow>(`
+      update "Creditos"."tbl_atributos"
+      set nombre = $2,
+          descripcion = $3,
+          aplica_a = $4,
+          tipo_formula = $5,
+          valor_default = $6,
+          valor2_default = $7,
+          porcentaje_default = $8,
+          minimo_default = $9,
+          maximo_default = $10,
+          proveedor_default = $11,
+          prioridad_default = $12,
+          aplica_iva_default = $13,
+          obligatorio_default = $14,
+          activo = coalesce($15, activo)
+      where id_atributo = $1 or upper(nombre) = upper($2)
+      returning id_atributo, nombre, descripcion, aplica_a, tipo_formula,
+                valor_default, valor2_default, porcentaje_default, minimo_default, maximo_default,
+                proveedor_default, prioridad_default, aplica_iva_default, obligatorio_default,
+                coalesce(activo, true) as activo
+    `, [
+      id,
+      input.nombre.trim().toUpperCase(),
+      input.descripcion?.trim() || null,
+      input.aplicaA || 'CREDITO',
+      input.tipoFormula || 'Porcentaje',
+      nullableNumber(input.valorDefault) ?? 0,
+      nullableNumber(input.valor2Default) ?? 0,
+      nullableNumber(input.porcentajeDefault) ?? 0,
+      nullableNumber(input.minimoDefault) ?? 0,
+      nullableNumber(input.maximoDefault) ?? 0,
+      input.proveedorDefault?.trim() || null,
+      input.prioridadDefault ?? 1,
+      Boolean(input.aplicaIvaDefault),
+      Boolean(input.obligatorioDefault),
+      input.activo ?? null
+    ]);
+
+    if (!result.rowCount) {
+      result = await client.query<TblAtributoDbRow>(`
+        insert into "Creditos"."tbl_atributos" (
+          nombre, descripcion, aplica_a, tipo_formula,
+          valor_default, valor2_default, porcentaje_default, minimo_default, maximo_default,
+          proveedor_default, prioridad_default, aplica_iva_default, obligatorio_default, activo
+        ) values (
+          $1, $2, $3, $4,
+          $5, $6, $7, $8, $9,
+          $10, $11, $12, $13, coalesce($14, true)
+        )
+        returning id_atributo, nombre, descripcion, aplica_a, tipo_formula,
+                  valor_default, valor2_default, porcentaje_default, minimo_default, maximo_default,
+                  proveedor_default, prioridad_default, aplica_iva_default, obligatorio_default,
+                  coalesce(activo, true) as activo
+      `, [
+        input.nombre.trim().toUpperCase(),
+        input.descripcion?.trim() || null,
+        input.aplicaA || 'CREDITO',
+        input.tipoFormula || 'Porcentaje',
+        nullableNumber(input.valorDefault) ?? 0,
+        nullableNumber(input.valor2Default) ?? 0,
+        nullableNumber(input.porcentajeDefault) ?? 0,
+        nullableNumber(input.minimoDefault) ?? 0,
+        nullableNumber(input.maximoDefault) ?? 0,
+        input.proveedorDefault?.trim() || null,
+        input.prioridadDefault ?? 1,
+        Boolean(input.aplicaIvaDefault),
+        Boolean(input.obligatorioDefault),
+        input.activo ?? null
+      ]);
+    }
+
+    return mapTblAtributo(result.rows[0]);
+  });
+}
+
+export async function updateTblAtributoEstado(id: number, activo: boolean): Promise<TblAtributoRow> {
+  return withClient(async (client) => {
+    await ensureTblAtributosTable(client);
+    const result = await client.query<TblAtributoDbRow>(`
+      update "Creditos"."tbl_atributos"
+      set activo = $2
+      where id_atributo = $1
+      returning id_atributo, nombre, descripcion, aplica_a, tipo_formula,
+                valor_default, valor2_default, porcentaje_default, minimo_default, maximo_default,
+                proveedor_default, prioridad_default, aplica_iva_default, obligatorio_default,
+                coalesce(activo, true) as activo
+    `, [id, activo]);
+
+    if (!result.rowCount) throw new SecurityError('Atributo maestro no encontrado', 404);
+    return mapTblAtributo(result.rows[0]);
+  });
+}
+
+export async function deleteTblAtributo(id: number): Promise<{ deleted: boolean }> {
+  return withClient(async (client) => {
+    await ensureTblAtributosTable(client);
+    const result = await client.query('delete from "Creditos"."tbl_atributos" where id_atributo = $1', [id]);
+    if (!result.rowCount) throw new SecurityError('Atributo maestro no encontrado', 404);
+    return { deleted: true };
+  });
+}
+
