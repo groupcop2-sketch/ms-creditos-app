@@ -15,14 +15,25 @@ async function main() {
   await client.connect();
   console.log('Connected to DB');
 
-  const clients = await client.query(`
-    select id_cliente, v_num_identificacion, v_nombre_completo, v_correo, fec_creacion
-    from "Creditos"."TBL_CLIENTES_PORTAL"
-    order by id_cliente desc
-    limit 5
+  const intRows = await client.query(`
+    select * from "Creditos"."TBL_INTEGRACIONES"
   `);
-  console.log('Clientes:');
-  console.table(clients.rows);
+  console.log('Integraciones:');
+  console.table(intRows.rows);
+
+  const finRows = await client.query(`
+    select * from "Creditos"."TBL_FINANCIERA"
+  `);
+  console.log('Financieras:');
+  console.table(finRows.rows);
+
+  const finIntRows = await client.query(`
+    select tif.*, i.codigo as cod_integracion
+    from "Creditos"."TBL_INTEGRACIONES_FINANCIERA" tif
+    join "Creditos"."TBL_INTEGRACIONES" i on i.id_integracion = tif.id_integracion
+  `);
+  console.log('Integraciones por Financiera:');
+  console.table(finIntRows.rows);
 
   await client.end();
 }

@@ -1,3 +1,4 @@
+import { validarValorAtributo } from '../creditos/calculo-producto.js';
 import type { ClientLike } from '../../lib/db.js';
 import { pool } from '../../lib/db.js';
 import { SecurityError } from '../security/security.service.js';
@@ -721,7 +722,13 @@ export async function listProductoAtributos(productoId: number) {
   });
 }
 
+function validarEntradaAtributo(input: CreateProductoAtributoInput) {
+  try { return validarValorAtributo(input); }
+  catch (error) { throw new SecurityError(error instanceof Error ? error.message : 'Configuracion de atributo invalida', 400); }
+}
+
 export async function updateProductoAtributo(productoId: number, productoAtributoId: number, input: CreateProductoAtributoInput) {
+  input = { ...input, ...validarEntradaAtributo(input) };
   return withClient(async (client) => {
     await ensureFormulaColumns(client);
     await ensureProducto(client, productoId);
@@ -763,6 +770,7 @@ export async function deleteProductoAtributo(productoId: number, productoAtribut
 }
 
 export async function createProductoAtributo(productoId: number, input: CreateProductoAtributoInput) {
+  validarEntradaAtributo(input);
   return withClient(async (client) => {
     await ensureProducto(client, productoId);
     await client.query(

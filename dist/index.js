@@ -24,6 +24,7 @@ import { documentosRoutes } from './modules/documentos/documentos.routes.js';
 import { firmasRoutes } from './modules/firmas/firmas.routes.js';
 import { docusignRoutes } from './modules/firmas/docusign.routes.js';
 import { jumioRoutes } from './modules/jumio/jumio.routes.js';
+import { diditRoutes } from './modules/didit/didit.routes.js';
 import { financierasRoutes } from './modules/financieras/financieras.routes.js';
 async function main() {
     const app = Fastify({
@@ -132,6 +133,9 @@ async function main() {
     await app.register(docusignRoutes, { prefix: '/api/v1/firmas/docusign' });
     await app.register(docusignRoutes, { prefix: '/api/v1/docusign' });
     await app.register(jumioRoutes, { prefix: '/api/v1/portal/jumio' });
+    await app.register(diditRoutes, { prefix: '/api/v1/portal/didit' });
+    await app.register(diditRoutes, { prefix: '/api/v1/didit' });
+    await app.register(diditRoutes, { prefix: '/api' });
     await app.register(financierasRoutes, { prefix: '/api/v1/financieras' });
     await app.register(financierasRoutes, { prefix: '/api/v1/integraciones-financiera' });
     app.get('/api/v1', async () => ({

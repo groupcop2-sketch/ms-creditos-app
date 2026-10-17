@@ -2,6 +2,7 @@ import { pool } from '../../lib/db.js';
 import { env } from '../../config/env.js';
 import { SecurityError } from '../security/security.service.js';
 import { verificarIntegracionActiva } from '../financieras/financieras.service.js';
+import { uploadBase64ImageToS3, getS3BucketConfig, createS3FolderIfNotExists, sanitizeFolderName } from '../storage/s3.service.js';
 // Memory cache for Jumio OAuth Bearer Token
 let cachedOAuthToken = null;
 export async function ensureJumioTable() {
@@ -348,16 +349,21 @@ export async function simularCompletarVerificacion(creditoId, decision = 'PASSED
 export async function obtenerConfiguracionJumio(creditoId, idFinanciera) {
     const status = await verificarIntegracionActiva('JUMIO', creditoId, idFinanciera);
     const datacenter = (status.ambiente === 'SANDBOX' ? 'us' : env.JUMIO_DATACENTER) || 'us';
+    const s3Config = getS3BucketConfig();
     return {
         jumioConfigurado: status.activa,
         datacenter,
         permiteCargaManual: true,
+        s3Bucket: s3Config.bucket,
+        s3Region: s3Config.region,
+        s3Arn: s3Config.arn,
         idFinanciera: status.idFinanciera,
         nombreFinanciera: status.nombreFinanciera
     };
 }
 /**
- * Stores manually uploaded identification documents and facial photo,
+ * Stores manually uploaded identification documents and facial photo in AWS S3:
+ * arn:aws:s3:::s3-demo-financiera-009040764532-us-east-2-an/{carpetaCredito}/
  * advancing the credit to stage 3 ('EN_ESTUDIO').
  */
 export async function guardarDocumentosManuales(input) {
@@ -376,22 +382,101 @@ export async function guardarDocumentosManuales(input) {
         throw new SecurityError(`Crédito con ID ${creditoId} no encontrado`, 404);
     }
     const credito = creditoRes.rows[0];
-    const internalRef = `DOC_MANUAL_${creditoId}_${Date.now()}`;
+    const internalRef = `DOC_S3_${creditoId}_${Date.now()}`;
     const now = new Date();
+    // 1. Obtener y asegurar la carpeta asociada al número del crédito en S3 (ej: CR-0001)
+    const numeroCredito = (credito.consecutivo?.trim() || `CR-${credito.id_credito}`);
+    const carpetaCredito = sanitizeFolderName(numeroCredito);
+    await createS3FolderIfNotExists(carpetaCredito);
+    // 2. Subir imágenes asociadas dentro de la carpeta del crédito en el bucket S3
+    const [s3Frente, s3Reverso, s3Rostro] = await Promise.all([
+        uploadBase64ImageToS3({
+            base64Data: documentoFrente,
+            creditoId,
+            numeroCredito,
+            folder: carpetaCredito,
+            fileNamePrefix: 'cedula_frente'
+        }),
+        documentoReverso
+            ? uploadBase64ImageToS3({
+                base64Data: documentoReverso,
+                creditoId,
+                numeroCredito,
+                folder: carpetaCredito,
+                fileNamePrefix: 'cedula_reverso'
+            })
+            : Promise.resolve(null),
+        uploadBase64ImageToS3({
+            base64Data: fotoRostro,
+            creditoId,
+            numeroCredito,
+            folder: carpetaCredito,
+            fileNamePrefix: 'foto_rostro'
+        })
+    ]);
+    const s3Config = getS3BucketConfig();
     const datosDocumento = {
-        metodo: 'CARGA_MANUAL',
+        metodo: 'CARGA_MANUAL_S3',
+        almacenamiento: 'AWS_S3',
+        s3Bucket: s3Config.bucket,
+        s3Region: s3Config.region,
+        s3Arn: s3Config.arn,
+        s3Carpeta: carpetaCredito,
+        s3CarpetaUri: `s3://${s3Config.bucket}/${carpetaCredito}/`,
         tipoDocumento: tipoDocumento || 'CEDULA_CIUDADANIA',
         numeroDocumento: numeroDocumento || credito.v_num_identificacion,
-        documentoFrente,
-        documentoReverso: documentoReverso || null,
-        fotoRostro,
+        documentoFrenteUrl: s3Frente.url,
+        documentoFrenteKey: s3Frente.key,
+        documentoFrenteArn: s3Frente.arn,
+        documentoReversoUrl: s3Reverso?.url || null,
+        documentoReversoKey: s3Reverso?.key || null,
+        documentoReversoArn: s3Reverso?.arn || null,
+        fotoRostroUrl: s3Rostro.url,
+        fotoRostroKey: s3Rostro.key,
+        fotoRostroArn: s3Rostro.arn,
         observaciones: observaciones || null,
         fechaCarga: now.toISOString(),
-        tamanoFrenteBytes: documentoFrente.length,
-        tamanoReversoBytes: documentoReverso ? documentoReverso.length : 0,
-        tamanoRostroBytes: fotoRostro.length
+        tamanoFrenteBytes: s3Frente.bytes,
+        tamanoReversoBytes: s3Reverso ? s3Reverso.bytes : 0,
+        tamanoRostroBytes: s3Rostro.bytes,
+        archivosS3: [
+            {
+                tipo: 'CEDULA_FRENTE',
+                carpeta: carpetaCredito,
+                bucket: s3Frente.bucket,
+                key: s3Frente.key,
+                url: s3Frente.url,
+                arn: s3Frente.arn,
+                bytes: s3Frente.bytes,
+                simulado: s3Frente.simulated
+            },
+            ...(s3Reverso
+                ? [
+                    {
+                        tipo: 'CEDULA_REVERSO',
+                        carpeta: carpetaCredito,
+                        bucket: s3Reverso.bucket,
+                        key: s3Reverso.key,
+                        url: s3Reverso.url,
+                        arn: s3Reverso.arn,
+                        bytes: s3Reverso.bytes,
+                        simulado: s3Reverso.simulated
+                    }
+                ]
+                : []),
+            {
+                tipo: 'FOTO_ROSTRO',
+                carpeta: carpetaCredito,
+                bucket: s3Rostro.bucket,
+                key: s3Rostro.key,
+                url: s3Rostro.url,
+                arn: s3Rostro.arn,
+                bytes: s3Rostro.bytes,
+                simulado: s3Rostro.simulated
+            }
+        ]
     };
-    // Upsert or insert into TBL_JUMIO_VERIFICACIONES
+    // 3. Upsert or insert into TBL_JUMIO_VERIFICACIONES
     const existingRes = await pool.query(`select id_jumio_verificacion
      from "Creditos"."TBL_JUMIO_VERIFICACIONES"
      where id_credito = $1
@@ -418,23 +503,42 @@ export async function guardarDocumentosManuales(input) {
             creditoId,
             clienteId || null,
             internalRef,
-            `MANUAL_${Date.now()}`,
-            `WF_MANUAL_${Date.now()}`,
+            `S3_MANUAL_${Date.now()}`,
+            `WF_S3_${Date.now()}`,
             JSON.stringify(datosDocumento)
         ]);
         idVerificacion = insertRes.rows[0].id_jumio_verificacion;
     }
-    // Advance credit to EN_ESTUDIO
+    // 4. Link S3 URL to TBL_CREDITO_DOCUMENTOS if a cédula/identidad slot exists
+    try {
+        await pool.query(`update "Creditos"."TBL_CREDITO_DOCUMENTOS"
+       set estado_documento = 'CARGADO',
+           v_archivo_url = $1,
+           fec_actualizacion = now()
+       where id_credito = $2
+         and (
+           id_documento_credito in (
+             select id_documento_credito from "Creditos"."TBL_DOCUMENTOS_CREDITO"
+             where upper(des_documento) like '%CEDULA%'
+                or upper(des_documento) like '%IDENTIDAD%'
+                or upper(des_documento) like '%DOCUMENTO%'
+           )
+         )`, [s3Frente.url, creditoId]);
+    }
+    catch (docErr) {
+        console.warn('No se pudo actualizar TBL_CREDITO_DOCUMENTOS:', docErr.message);
+    }
+    // 5. Advance credit to EN_ESTUDIO
     await pool.query(`update "Creditos"."TBL_CREDITOS"
      set v_estado_solicitud = 'EN_ESTUDIO', fec_actualizacion = now()
      where id_credito = $1`, [creditoId]);
-    // Add historical log
+    // 6. Add historical audit log
     try {
         await pool.query(`insert into "Creditos"."TBL_CREDITO_HISTORIAL" (
         id_credito, accion, estado_anterior, estado_nuevo, observacion, id_usuario
-      ) values ($1, 'VALIDACION_BIOMETRICA_MANUAL', 'VALIDACION', 'ESTUDIO', $2, null)`, [
+      ) values ($1, 'VALIDACION_BIOMETRICA_S3', 'VALIDACION', 'ESTUDIO', $2, null)`, [
             creditoId,
-            'Carga manual de documento de identidad y fotografía del rostro completada por el cliente. Solicitud avanzada a estudio de crédito.'
+            `Carga manual de documentos y rostro guardada en carpeta S3: '${carpetaCredito}/' del bucket ${s3Config.bucket}. Solicitud avanzada a estudio de crédito.`
         ]);
     }
     catch (histErr) {
@@ -442,10 +546,21 @@ export async function guardarDocumentosManuales(input) {
     }
     return {
         success: true,
-        message: 'Documentos e identidad facial registrados correctamente. Tu solicitud ha pasado a estudio de crédito.',
+        message: `Documentos e identidad facial registrados correctamente en la carpeta '${carpetaCredito}/' de AWS S3. Tu solicitud ha pasado a estudio de crédito.`,
         idVerificacion,
         creditoId,
         estado: 'APROBADO',
-        decision: 'PASSED'
+        decision: 'PASSED',
+        s3: {
+            bucket: s3Config.bucket,
+            arn: s3Config.arn,
+            region: s3Config.region,
+            carpeta: carpetaCredito,
+            archivos: {
+                frente: s3Frente.url,
+                reverso: s3Reverso?.url || null,
+                rostro: s3Rostro.url
+            }
+        }
     };
 }
