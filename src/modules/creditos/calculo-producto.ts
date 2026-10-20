@@ -27,13 +27,13 @@ export function calcularProducto(monto: number, plazo: number, rows: AtributoCal
   const tasa = tasaAprobada ?? Number(intereses[0].porcentaje);
   if (!Number.isFinite(tasa) || tasa < 0) throw new Error('La tasa de interes mensual configurada es invalida');
   const rate = tasa / 100;
-  function evaluar(row: AtributoCalculo, cuota: number, saldo: number) {
+  function evaluar(row: AtributoCalculo, cuota: number, saldo: number, capital = monto) {
     const formula = key((row.formula_codigo ?? '') + ' ' + row.tipo_calculo);
-    const base = row.base_calculo ?? (formula.includes('SMLMV') ? 'SMLMV' : formula.includes('SALDO') ? 'SALDO' : formula.includes('CUOTA') ? 'CUOTA' : 'VALOR_CREDITO');
-    // VALOR_CREDITO/VALOR/VALOR_DESEMBOLSO use the requested amount, never the financed charges.
-    const valorBase = base === 'SMLMV' || base === 'SMMLV' ? smlmv : base === 'PLAZO' ? plazo : base === 'SALDO' ? saldo : base === 'CUOTA' ? cuota : monto;
+    const base = row.base_calculo ?? (formula.includes('SMLMV') ? 'SMLMV' : formula.includes('SALDO') ? 'SALDO' : formula.includes('CUOTA') ? 'CUOTA' : 'VALOR');
+    // Only explicit VALOR_CREDITO uses financed capital; disbursement and VALOR use requested cash.
+    const valorBase = base === 'SMLMV' || base === 'SMMLV' ? smlmv : base === 'PLAZO' ? plazo : base === 'SALDO' ? saldo : base === 'CUOTA' ? cuota : base === 'VALOR_CREDITO' ? capital : monto;
     const configurado = configurarAtributo(row);
-    let valor = configurado.modoCalculo === 'PORCENTAJE' ? monto * (configurado.porcentaje ?? 0) / 100
+    let valor = configurado.modoCalculo === 'PORCENTAJE' ? valorBase * (configurado.porcentaje ?? 0) / 100
       : configurado.modoCalculo === 'VALOR_FIJO' ? configurado.valor ?? 0 : evaluarFormula(row, valorBase, plazo);
     // Age eligibility bounds never cap a charge in pesos.
     if (row.tipo_limite !== 'EDAD') {
@@ -56,21 +56,49 @@ export function calcularProducto(monto: number, plazo: number, rows: AtributoCal
       obligatorio: row.obligatorio, prioridad: row.prioridad, sumaAlCredito, sumaALaCuota, esDescuento,
       valorCalculado: esInteres ? 0 : evaluar(row, 0, monto) };
   });
-  const cargosFinanciados = money(atributos.filter(a => a.sumaAlCredito).reduce((s,a) => s+a.valorCalculado,0));
-  const descuentosDesembolso = money(atributos.filter(a => a.esDescuento).reduce((s,a) => s+a.valorCalculado,0));
-  const valorCredito = money(monto + cargosFinanciados);
+  const filasFinanciadas = rows.filter(row => atributos.find(a => a.id === row.id_producto_atributo)?.sumaAlCredito);
+  const deudaPara = (capital: number) => money(monto + filasFinanciadas.reduce((total, row) => total + evaluar(row, 0, capital, capital), 0));
+  // Solve capital = cash requested + financed charges(capital), at cent precision.
+  // This also supports fixed charges, formulas, VAT and monetary caps without duplicating charges.
+  let menor = Math.round(monto * 100);
+  let mayor = Math.max(menor + 1, Math.round(deudaPara(monto) * 100));
+  const diferencia = (centavos: number) => Math.round(deudaPara(centavos / 100) * 100) - centavos;
+  let solucion = diferencia(menor) === 0 ? menor : null;
+  for (let i = 0; solucion === null && diferencia(mayor) > 0 && i < 60; i++) {
+    mayor *= 2;
+    if (!Number.isSafeInteger(mayor)) throw new Error('Los cargos financiados no permiten determinar un capital valido');
+  }
+  if (solucion === null && diferencia(mayor) > 0) throw new Error('No hay solucion para el capital: revisa los porcentajes y formulas financiados');
+  for (let i = 0; solucion === null && i < 100; i++) {
+    const medio = Math.floor((menor + mayor) / 2);
+    const dif = diferencia(medio);
+    if (dif === 0) { solucion = medio; break; }
+    if (mayor - menor <= 1) {
+      if (diferencia(mayor) === 0) solucion = mayor;
+      break;
+    }
+    if (dif > 0) menor = medio; else mayor = medio;
+  }
+  if (solucion === null) throw new Error('No fue posible conciliar el capital y sus cargos a centavos');
+  const valorCredito = solucion / 100;
+  for (const atributo of atributos) {
+    const row = rows.find(item => item.id_producto_atributo === atributo.id)!;
+    if (atributo.sumaAlCredito || atributo.esDescuento) atributo.valorCalculado = evaluar(row, 0, valorCredito, valorCredito);
+  }
+  const cargosFinanciados = money(atributos.filter(a => a.sumaAlCredito).reduce((total,a) => total+a.valorCalculado,0));
+  const descuentosDesembolso = money(atributos.filter(a => a.esDescuento).reduce((total,a) => total+a.valorCalculado,0));
   const cuotaBase = money(installment(valorCredito, rate, plazo));
   let saldo = valorCredito;
   const plan = Array.from({length: plazo}, (_, index) => {
     const saldoInicial = saldo;
     const interes = money(saldo * rate);
     const capital = index === plazo-1 ? saldo : Math.min(saldo, money(cuotaBase-interes));
-    const cargos = money(rows.filter(r => atributos.find(a => a.id === r.id_producto_atributo)?.sumaALaCuota).reduce((s,r) => s+evaluar(r, cuotaBase, saldo),0));
+    const cargos = money(rows.filter(r => atributos.find(a => a.id === r.id_producto_atributo)?.sumaALaCuota).reduce((s,r) => s+evaluar(r, cuotaBase, saldo, valorCredito),0));
     saldo = money(Math.max(0, saldo-capital));
     return { numero: index+1, saldoInicial, capital, interes, cargos, cuota: money(capital+interes+cargos), saldoFinal: saldo };
   });
   for (const a of atributos) {
-    if (a.sumaALaCuota) a.valorCalculado = evaluar(rows.find(r => r.id_producto_atributo === a.id)!, cuotaBase, valorCredito);
+    if (a.sumaALaCuota) a.valorCalculado = evaluar(rows.find(r => r.id_producto_atributo === a.id)!, cuotaBase, valorCredito, valorCredito);
     if (a.id === intereses[0].id_producto_atributo) a.valorCalculado = plan[0].interes;
   }
   return { resumen: { montoSolicitado: money(monto), valorDesembolso: money(Math.max(0,monto-descuentosDesembolso)), valorCredito,

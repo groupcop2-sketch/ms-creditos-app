@@ -5,7 +5,7 @@ El motor calculo-producto.ts se comparte entre simulacion, radicacion, aprobacio
 ## Modos
 
 - VALOR_FIJO: usa valor como monto del cargo. No interpreta ese monto como parametro de otra formula.
-- PORCENTAJE: aplica porcentaje sobre el monto solicitado.
+- PORCENTAJE: aplica sobre la base configurada. VALOR_CREDITO usa capital total financiado; VALOR_DESEMBOLSO y VALOR usan monto solicitado. Sin base explicita se conserva monto solicitado.
 - FORMULA: evalua operacion, base_calculo, expresion, valor (parametro 1), valor2 (parametro 2), porcentaje y plazo segun la formula asociada. Puede no requerir valor ni porcentaje si su expresion usa BASE y/o PLAZO.
 - Sin modo guardado, se conserva compatibilidad con configuraciones antiguas. Un cero inactivo junto a un campo positivo se trata como null. Dos valores positivos son invalidos fuera del modo FORMULA.
 - INTERES CORRIENTE debe ser porcentaje mensual vencido y se aplica al saldo del capital real financiado.
@@ -29,4 +29,10 @@ La funcion SQL generar_amortizacion(numeric,numeric,integer) queda intacta para 
 Pruebas: npm run test:calculo
 Compilacion: npm run build
 
-Verificado con los datos vigentes de Libranza Plus: solicitado 10.000.000; seguro (10.000.000/1.000.000)*500*12=60.000; fianza 10.000.000*38%*1,19=4.522.000. A 12 meses: capital real 15.402.000 y cuota 1.466.945,92. A 24 meses: seguro 120.000, capital real 15.462.000 y cuota 828.423,90. Tasa mensual vigente de la comprobacion: 2,1176%.
+## Capital que incluye cargos sobre si mismo
+
+Los atributos cuya base es VALOR_CREDITO se calculan sobre el capital real financiado, incluyendo esos mismos cargos. Se resuelve en centavos la ecuacion capital = monto solicitado + suma(cargos financiados(capital)); despues se calcula la amortizacion sobre ese capital, con la tasa mensual configurada. No se vuelven a sumar los cargos a la cuota. Las configuraciones sin una solucion conciliable se rechazan.
+
+La afiliacion de Libranza Plus se asocia mediante scripts/migrations/20261020-afiliacion-base-smmlv.sql a (SMMLV * porcentaje/100) * plazo + valor. Se lee el parametro vigente SMLMV o su alias SMMLV, sin un salario hardcodeado. En la verificacion, el parametro SMMLV vale 1.750.905.
+
+Referencia a 12 meses y solicitado 10.000.000: fianza 38% del capital mas IVA; seguro (capital/1.000.000)*500*12; afiliacion (1.750.905*0,2%)*12+7.000; corretaje 8% del desembolso. Resultado mostrado: fianza 9.054.868, seguro 120.144, afiliacion 49.022, corretaje 800.000, capital total 20.024.034 y cuota 1.907.166. Las cuentas y la conciliacion conservan centavos internamente.

@@ -839,7 +839,7 @@ async function calcularCreditoConfigurado(client, productoId, monto, plazo, tasa
      where a.id_producto_credito = $1 order by a.prioridad, a.id_producto_atributo`, [productoId]);
     const necesitaSmlmv = result.rows.some(row => (row.modo_calculo === 'FORMULA' || !row.modo_calculo) && (row.base_calculo === 'SMLMV' || row.base_calculo === 'SMMLV' || /SM?MLV/.test(normalizeKey(row.tipo_calculo))));
     const necesitaIva = result.rows.some(row => row.aplica_iva);
-    const smlmv = necesitaSmlmv ? await getParametroFinanciero(client, 'SMLMV', new Date(), false) : 0;
+    const smlmv = necesitaSmlmv ? (await getParametroFinanciero(client, 'SMLMV', new Date(), false) ?? await getParametroFinanciero(client, 'SMMLV', new Date(), false)) : 0;
     const iva = necesitaIva ? await getParametroFinanciero(client, 'IVA', new Date(), false) : 0;
     if (smlmv === null || iva === null)
         throw new SecurityError('Falta configurar un parametro financiero vigente requerido por el producto (SMLMV o IVA)', 400);
