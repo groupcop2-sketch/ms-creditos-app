@@ -53,8 +53,10 @@ const estadoProductoSchema = z.object({
 const formulaSchema = z.object({
     nombre: z.string().min(1),
     codigo: z.string().trim().nullable().optional(),
-    baseCalculo: z.enum(['VALOR_CREDITO', 'VALOR_DESEMBOLSO', 'SALDO', 'SMLMV', 'CUOTA', 'VALOR']).nullable().optional(),
-    operacion: z.enum(['VALOR_FIJO', 'PORCENTAJE', 'VALOR_POR_PLAZO', 'BASE_POR_VALOR_DIV_VALOR2']).nullable().optional(),
+    baseCalculo: z.enum(['VALOR_CREDITO', 'VALOR_DESEMBOLSO', 'SALDO', 'SMLMV', 'CUOTA', 'VALOR', 'PLAZO']).nullable().optional(),
+    expresion: z.string().trim().max(512).nullable().optional(),
+    multiplicaPorPlazo: z.boolean().nullable().optional(),
+    operacion: z.enum(['VALOR_FIJO', 'PORCENTAJE', 'PORCENTAJE_POR_PLAZO', 'VALOR_POR_PLAZO', 'BASE_MUL_VALOR', 'BASE_MUL_VALOR_POR_PLAZO', 'BASE_DIV_VALOR', 'BASE_POR_VALOR_DIV_VALOR2', 'BASE_POR_VALOR_DIV_VALOR2_POR_PLAZO', 'BASE_DIV_VALOR_MUL_VALOR2', 'BASE_DIV_VALOR_MUL_VALOR2_POR_PLAZO', 'PERSONALIZADA']).nullable().optional(),
     requiereValor: z.boolean().nullable().optional(),
     requiereValor2: z.boolean().nullable().optional(),
     requierePorcentaje: z.boolean().nullable().optional(),
@@ -62,6 +64,8 @@ const formulaSchema = z.object({
     aplicaMaximo: z.boolean().nullable().optional()
 });
 const atributoSchema = z.object({
+    modoCalculo: z.enum(['VALOR_FIJO', 'PORCENTAJE', 'FORMULA']).nullable().optional(),
+    tipoLimite: z.enum(['MONTO', 'EDAD']).nullable().optional(),
     idTipoAtributo: z.coerce.number().int().positive(),
     idTipoCalculo: z.coerce.number().int().positive(),
     nombre: z.string().min(1),
@@ -82,7 +86,7 @@ const atributoSchema = z.object({
     catch {
         return false;
     }
-}, { message: 'Configura solo uno: porcentaje o valor fijo; interes corriente requiere porcentaje mensual', path: ['valor'] })
+}, { message: 'Revisa el valor, porcentaje o parametros de la formula; interes corriente requiere porcentaje mensual', path: ['valor'] })
     .transform(input => ({ ...input, ...validarValorAtributo(input) }));
 const convenioSchema = z.object({
     idEmpresa: z.coerce.number().int().positive(),

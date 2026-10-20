@@ -1,4 +1,4 @@
-import { validarValorAtributo } from '../creditos/calculo-producto.js';
+import { configurarAtributo, evaluarExpresion, type ModoCalculo } from '../creditos/formulas-atributos.js';
 import type { ClientLike } from '../../lib/db.js';
 import { pool } from '../../lib/db.js';
 import { SecurityError } from '../security/security.service.js';
@@ -9,6 +9,8 @@ interface CatalogRow {
 }
 
 interface FormulaCatalogRow extends CatalogRow {
+  expresion: string | null;
+  multiplica_por_plazo: boolean | null;
   codigo: string | null;
   base_calculo: string | null;
   operacion: string | null;
@@ -60,6 +62,8 @@ export interface CreateProductoCreditoInput {
 }
 
 export interface CreateProductoAtributoInput {
+  modoCalculo?: ModoCalculo | null;
+  tipoLimite?: 'MONTO' | 'EDAD' | null;
   idTipoAtributo: number;
   idTipoCalculo: number;
   nombre: string;
@@ -173,6 +177,8 @@ interface ProductoRow {
 }
 
 interface AtributoRow {
+  modo_calculo?: ModoCalculo | null;
+  tipo_limite?: 'MONTO' | 'EDAD' | null;
   id_producto_atributo: number;
   id_tipo_atributo?: number;
   id_tipo_calculo?: number;
@@ -246,11 +252,15 @@ async function ensureFormulaColumns(client: ClientLike) {
       add column if not exists requiere_porcentaje boolean null,
       add column if not exists aplica_minimo boolean null,
       add column if not exists aplica_maximo boolean null,
-      add column if not exists activo boolean null
+      add column if not exists activo boolean null,
+      add column if not exists expresion text null,
+      add column if not exists multiplica_por_plazo boolean null
   `);
   await client.query(`
     alter table "Creditos"."TBL_PRODUCTO_CREDITO_ATRIBUTOS"
-      add column if not exists valor2 numeric(18,6) null
+      add column if not exists valor2 numeric(18,6) null,
+      add column if not exists modo_calculo varchar(20) null,
+      add column if not exists tipo_limite varchar(10) null
   `);
 
   const seedFormulas = [
@@ -280,7 +290,7 @@ function formulaCodeFromName(nombre: string) {
   return normalizeKey(nombre).replace(/\s+/g, '_').replace(/[^A-Z0-9_]/g, '');
 }
 
-function inferFormulaConfig(input: { nombre: string; codigo?: string | null; baseCalculo?: string | null; operacion?: string | null; requiereValor?: boolean | null; requiereValor2?: boolean | null; requierePorcentaje?: boolean | null; aplicaMinimo?: boolean | null; aplicaMaximo?: boolean | null; activo?: boolean | null }) {
+function inferFormulaConfig(input: { nombre: string; codigo?: string | null; baseCalculo?: string | null; operacion?: string | null; requiereValor?: boolean | null; requiereValor2?: boolean | null; requierePorcentaje?: boolean | null; aplicaMinimo?: boolean | null; aplicaMaximo?: boolean | null; activo?: boolean | null; expresion?: string | null; multiplicaPorPlazo?: boolean | null }) {
   const key = normalizeKey(`${input.codigo ?? ''} ${input.nombre}`);
   let baseCalculo = input.baseCalculo;
   let operacion = input.operacion;
@@ -290,29 +300,35 @@ function inferFormulaConfig(input: { nombre: string; codigo?: string | null; bas
     codigo: input.codigo ?? formulaCodeFromName(input.nombre),
     baseCalculo,
     operacion,
-    requiereValor: input.requiereValor ?? ['VALOR_FIJO', 'VALOR_POR_PLAZO', 'BASE_POR_VALOR_DIV_VALOR2'].includes(operacion),
-    requiereValor2: input.requiereValor2 ?? operacion === 'BASE_POR_VALOR_DIV_VALOR2',
-    requierePorcentaje: input.requierePorcentaje ?? operacion === 'PORCENTAJE',
+    requiereValor: input.requiereValor ?? (operacion === 'PERSONALIZADA' ? /\bVALOR1?\b/.test(input.expresion ?? '') : operacion.includes('VALOR')),
+    requiereValor2: input.requiereValor2 ?? (operacion.includes('VALOR2') || /\bVALOR2\b/.test(input.expresion ?? '')),
+    requierePorcentaje: input.requierePorcentaje ?? (operacion.startsWith('PORCENTAJE') || /\bPORCENTAJE\b/.test(input.expresion ?? '')),
     aplicaMinimo: input.aplicaMinimo ?? true,
     aplicaMaximo: input.aplicaMaximo ?? true,
+    expresion: input.expresion?.trim() || null,
+    multiplicaPorPlazo: input.multiplicaPorPlazo ?? false,
     activo: input.activo ?? true
   };
 }
 
 function mapFormulaCatalog(row: FormulaCatalogRow) {
-  const cfg = inferFormulaConfig({ nombre: row.nombre, codigo: row.codigo, baseCalculo: row.base_calculo, operacion: row.operacion, requiereValor: row.requiere_valor, requiereValor2: row.requiere_valor2, requierePorcentaje: row.requiere_porcentaje, aplicaMinimo: row.aplica_minimo, aplicaMaximo: row.aplica_maximo, activo: row.activo });
+  const cfg = inferFormulaConfig({ nombre: row.nombre, codigo: row.codigo, baseCalculo: row.base_calculo, operacion: row.operacion, requiereValor: row.requiere_valor, requiereValor2: row.requiere_valor2, requierePorcentaje: row.requiere_porcentaje, aplicaMinimo: row.aplica_minimo, aplicaMaximo: row.aplica_maximo, activo: row.activo, expresion: row.expresion, multiplicaPorPlazo: row.multiplica_por_plazo });
   return { id: row.id, nombre: row.nombre, ...cfg };
 }
 
-export async function createTipoCalculoCredito(input: { nombre: string; codigo?: string | null; baseCalculo?: string | null; operacion?: string | null; requiereValor?: boolean | null; requiereValor2?: boolean | null; requierePorcentaje?: boolean | null; aplicaMinimo?: boolean | null; aplicaMaximo?: boolean | null }) {
+export async function createTipoCalculoCredito(input: { nombre: string; codigo?: string | null; baseCalculo?: string | null; operacion?: string | null; requiereValor?: boolean | null; requiereValor2?: boolean | null; requierePorcentaje?: boolean | null; aplicaMinimo?: boolean | null; aplicaMaximo?: boolean | null; expresion?: string | null; multiplicaPorPlazo?: boolean | null }) {
   return withClient(async (client) => {
     await ensureFormulaColumns(client);
     const cfg = inferFormulaConfig(input);
+    if (cfg.operacion === 'PERSONALIZADA' || cfg.expresion) {
+      try { evaluarExpresion(cfg.expresion ?? '', {BASE:1,VALOR:1,VALOR1:1,VALOR2:1,PLAZO:1,PORCENTAJE:1}, true); }
+      catch (error) { throw new SecurityError(error instanceof Error ? error.message : 'Expresion invalida', 400); }
+    }
     const result = await client.query<FormulaCatalogRow>(
-      `insert into "Creditos"."TBL_TIPOS_CALCULO_CREDITO" (des_tipo_calculo, codigo, base_calculo, operacion, requiere_valor, requiere_valor2, requiere_porcentaje, aplica_minimo, aplica_maximo, activo)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,true)
-       returning id_tipo_calculo as id, des_tipo_calculo as nombre, codigo, base_calculo, operacion, requiere_valor, requiere_valor2, requiere_porcentaje, aplica_minimo, aplica_maximo, activo`,
-      [input.nombre.trim(), cfg.codigo, cfg.baseCalculo, cfg.operacion, cfg.requiereValor, cfg.requiereValor2, cfg.requierePorcentaje, cfg.aplicaMinimo, cfg.aplicaMaximo]
+      `insert into "Creditos"."TBL_TIPOS_CALCULO_CREDITO" (des_tipo_calculo, codigo, base_calculo, operacion, requiere_valor, requiere_valor2, requiere_porcentaje, aplica_minimo, aplica_maximo, activo, expresion, multiplica_por_plazo)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,$10,$11)
+       returning id_tipo_calculo as id, des_tipo_calculo as nombre, codigo, base_calculo, operacion, requiere_valor, requiere_valor2, requiere_porcentaje, aplica_minimo, aplica_maximo, activo, expresion, multiplica_por_plazo`,
+      [input.nombre.trim(), cfg.codigo, cfg.baseCalculo, cfg.operacion, cfg.requiereValor, cfg.requiereValor2, cfg.requierePorcentaje, cfg.aplicaMinimo, cfg.aplicaMaximo, cfg.expresion, cfg.multiplicaPorPlazo]
     );
     return mapFormulaCatalog(result.rows[0]);
   });
@@ -511,7 +527,7 @@ export async function listProductosCreditoCatalogs() {
     const [tiposCredito, tiposAtributo, tiposCalculo, documentos, etapas, libranzeras] = await Promise.all([
       client.query<CatalogRow>('select id_tipo_credito as id, des_tipo_credito as nombre from "Creditos"."TBL_TIPOS_CREDITO" order by des_tipo_credito'),
       client.query<CatalogRow>('select id_tipo_atributo as id, des_tipo_atributo as nombre from "Creditos"."TBL_TIPOS_ATRIBUTO_CREDITO" order by des_tipo_atributo'),
-      client.query<FormulaCatalogRow>('select id_tipo_calculo as id, des_tipo_calculo as nombre, codigo, base_calculo, operacion, requiere_valor, requiere_valor2, requiere_porcentaje, aplica_minimo, aplica_maximo, activo from "Creditos"."TBL_TIPOS_CALCULO_CREDITO" where coalesce(activo, true) = true order by des_tipo_calculo'),
+      client.query<FormulaCatalogRow>('select id_tipo_calculo as id, des_tipo_calculo as nombre, codigo, base_calculo, operacion, requiere_valor, requiere_valor2, requiere_porcentaje, aplica_minimo, aplica_maximo, activo, expresion, multiplica_por_plazo from "Creditos"."TBL_TIPOS_CALCULO_CREDITO" where coalesce(activo, true) = true order by des_tipo_calculo'),
       client.query<CatalogRow>('select id_documento_credito as id, des_documento as nombre from "Creditos"."TBL_DOCUMENTOS_CREDITO" order by des_documento'),
       client.query<CatalogRow>('select id_etapa_credito as id, des_etapa as nombre from "Creditos"."TBL_ETAPAS_CREDITO" order by id_etapa_credito'),
       client.query<CatalogRow>('select id_libranzera as id, v_razon_social as nombre from "Creditos"."TBL_LIBRANZERAS" order by v_razon_social')
@@ -622,7 +638,7 @@ export async function createProductoCreditoVersion(productoId: number) {
       from "Creditos"."TBL_PRODUCTOS_CREDITO" where id_producto_credito = $1
       returning id_producto_credito`, [productoId, consecutivo, version, baseId]);
     const newId = created.rows[0].id_producto_credito;
-    await client.query('insert into "Creditos"."TBL_PRODUCTO_CREDITO_ATRIBUTOS" (id_producto_credito, id_tipo_atributo, id_tipo_calculo, nombre, valor, porcentaje, valor2, minimo, maximo, aplica_iva, obligatorio, proveedor, prioridad) select $2, id_tipo_atributo, id_tipo_calculo, nombre, valor, porcentaje, valor2, minimo, maximo, aplica_iva, obligatorio, proveedor, prioridad from "Creditos"."TBL_PRODUCTO_CREDITO_ATRIBUTOS" where id_producto_credito = $1', [productoId, newId]);
+    await client.query('insert into "Creditos"."TBL_PRODUCTO_CREDITO_ATRIBUTOS" (id_producto_credito, id_tipo_atributo, id_tipo_calculo, nombre, valor, porcentaje, valor2, minimo, maximo, aplica_iva, obligatorio, proveedor, prioridad, modo_calculo, tipo_limite) select $2, id_tipo_atributo, id_tipo_calculo, nombre, valor, porcentaje, valor2, minimo, maximo, aplica_iva, obligatorio, proveedor, prioridad, modo_calculo, tipo_limite from "Creditos"."TBL_PRODUCTO_CREDITO_ATRIBUTOS" where id_producto_credito = $1', [productoId, newId]);
     await client.query('insert into "Creditos"."TBL_PRODUCTO_CREDITO_DOCUMENTOS" (id_producto_credito, id_documento_credito, obligatorio, grupo, prioridad, aplica_a, requiere_firma, requiere_validacion) select $2, id_documento_credito, obligatorio, grupo, prioridad, aplica_a, requiere_firma, requiere_validacion from "Creditos"."TBL_PRODUCTO_CREDITO_DOCUMENTOS" where id_producto_credito = $1', [productoId, newId]);
     await client.query('insert into "Creditos"."TBL_PRODUCTO_CREDITO_ETAPAS" (id_producto_credito, id_etapa_credito, orden, obligatoria, permite_devolucion, responsable, sla_horas) select $2, id_etapa_credito, orden, obligatoria, permite_devolucion, responsable, sla_horas from "Creditos"."TBL_PRODUCTO_CREDITO_ETAPAS" where id_producto_credito = $1', [productoId, newId]);
     await client.query('update "Creditos"."TBL_PRODUCTOS_CREDITO" set activo = false, vigencia_hasta = current_date where id_producto_credito = $1', [productoId]);
@@ -718,39 +734,50 @@ export async function listProductoAtributos(productoId: number) {
        where a.id_producto_credito = $1 order by a.prioridad, a.nombre`,
       [productoId]
     );
-    return result.rows.map((row) => ({ id: row.id_producto_atributo, idTipoAtributo: row.id_tipo_atributo, idTipoCalculo: row.id_tipo_calculo, tipoAtributo: row.tipo_atributo, tipoCalculo: row.tipo_calculo, nombre: row.nombre, valor: row.valor ? Number(row.valor) : null, porcentaje: row.porcentaje ? Number(row.porcentaje) : null, valor2: row.valor2 ? Number(row.valor2) : null, minimo: row.minimo ? Number(row.minimo) : null, maximo: row.maximo ? Number(row.maximo) : null, aplicaIva: row.aplica_iva, obligatorio: row.obligatorio, proveedor: row.proveedor, prioridad: row.prioridad }));
+    return result.rows.map((row) => ({ modoCalculo: row.modo_calculo ?? null, tipoLimite: row.tipo_limite ?? 'MONTO', id: row.id_producto_atributo, idTipoAtributo: row.id_tipo_atributo, idTipoCalculo: row.id_tipo_calculo, tipoAtributo: row.tipo_atributo, tipoCalculo: row.tipo_calculo, nombre: row.nombre, valor: row.valor ? Number(row.valor) : null, porcentaje: row.porcentaje ? Number(row.porcentaje) : null, valor2: row.valor2 ? Number(row.valor2) : null, minimo: row.minimo ? Number(row.minimo) : null, maximo: row.maximo ? Number(row.maximo) : null, aplicaIva: row.aplica_iva, obligatorio: row.obligatorio, proveedor: row.proveedor, prioridad: row.prioridad }));
   });
 }
 
-function validarEntradaAtributo(input: CreateProductoAtributoInput) {
-  try { return validarValorAtributo(input); }
-  catch (error) { throw new SecurityError(error instanceof Error ? error.message : 'Configuracion de atributo invalida', 400); }
+async function validarEntradaAtributo(client: ClientLike, input: CreateProductoAtributoInput) {
+  const result = await client.query<Record<string, any>>('select * from "Creditos"."TBL_TIPOS_CALCULO_CREDITO" where id_tipo_calculo = $1', [input.idTipoCalculo]);
+  if (!result.rowCount) throw new SecurityError('Formula asociada no encontrada', 400);
+  try {
+    const formula = result.rows[0];
+    const config = configurarAtributo({ ...formula, ...input, tipo_calculo: formula.des_tipo_calculo });
+    if (input.tipoLimite === 'EDAD' && [input.minimo, input.maximo].some(value => value != null && (!Number.isInteger(value) || value < 0 || value > 120))) throw new Error('Los limites de edad deben ser enteros entre 0 y 120');
+    if (input.minimo != null && input.maximo != null && input.maximo > 0 && input.minimo > input.maximo) throw new Error('El limite minimo no puede superar al maximo');
+    return { ...input, modoCalculo: config.modoCalculo, valor: config.valor, porcentaje: config.porcentaje, valor2: config.modoCalculo === 'FORMULA' ? config.valor2 : null };
+  } catch (error) { throw new SecurityError(error instanceof Error ? error.message : 'Configuracion de atributo invalida', 400); }
 }
 
 export async function updateProductoAtributo(productoId: number, productoAtributoId: number, input: CreateProductoAtributoInput) {
-  input = { ...input, ...validarEntradaAtributo(input) };
   return withClient(async (client) => {
     await ensureFormulaColumns(client);
     await ensureProducto(client, productoId);
+    if (input.tipoLimite == null) {
+      const previo = await client.query<{tipo_limite: 'MONTO' | 'EDAD' | null}>('select tipo_limite from "Creditos"."TBL_PRODUCTO_CREDITO_ATRIBUTOS" where id_producto_credito = $1 and id_producto_atributo = $2', [productoId, productoAtributoId]);
+      input = { ...input, tipoLimite: previo.rows[0]?.tipo_limite ?? 'MONTO' };
+    }
+    input = await validarEntradaAtributo(client, input);
     let updated = await client.query(
       `update "Creditos"."TBL_PRODUCTO_CREDITO_ATRIBUTOS"
-       set id_tipo_atributo = $3, id_tipo_calculo = $4, nombre = $5, valor = $6, porcentaje = $7, valor2 = $8, minimo = $9, maximo = $10, aplica_iva = $11, obligatorio = $12, proveedor = $13, prioridad = $14
+       set id_tipo_atributo = $3, id_tipo_calculo = $4, nombre = $5, valor = $6, porcentaje = $7, valor2 = $8, minimo = $9, maximo = $10, aplica_iva = $11, obligatorio = $12, proveedor = $13, prioridad = $14, modo_calculo = $15, tipo_limite = $16
        where id_producto_credito = $1 and id_producto_atributo = $2`,
-      [productoId, productoAtributoId, input.idTipoAtributo, input.idTipoCalculo, input.nombre.trim(), nullableNumber(input.valor), nullableNumber(input.porcentaje), nullableNumber(input.valor2), nullableNumber(input.minimo), nullableNumber(input.maximo), Boolean(input.aplicaIva), Boolean(input.obligatorio), nullableText(input.proveedor), nullableNumber(input.prioridad) ?? 1]
+      [productoId, productoAtributoId, input.idTipoAtributo, input.idTipoCalculo, input.nombre.trim(), nullableNumber(input.valor), nullableNumber(input.porcentaje), nullableNumber(input.valor2), nullableNumber(input.minimo), nullableNumber(input.maximo), Boolean(input.aplicaIva), Boolean(input.obligatorio), nullableText(input.proveedor), nullableNumber(input.prioridad) ?? 1, input.modoCalculo ?? null, input.tipoLimite ?? 'MONTO']
     );
     if (!updated.rowCount) {
       updated = await client.query(
         `update "Creditos"."TBL_PRODUCTO_CREDITO_ATRIBUTOS"
-         set id_tipo_atributo = $3, id_tipo_calculo = $4, nombre = $5, valor = $6, porcentaje = $7, valor2 = $8, minimo = $9, maximo = $10, aplica_iva = $11, obligatorio = $12, proveedor = $13, prioridad = $14
+         set id_tipo_atributo = $3, id_tipo_calculo = $4, nombre = $5, valor = $6, porcentaje = $7, valor2 = $8, minimo = $9, maximo = $10, aplica_iva = $11, obligatorio = $12, proveedor = $13, prioridad = $14, modo_calculo = $15, tipo_limite = $16
          where id_producto_credito = $1 and id_tipo_atributo = $2`,
-        [productoId, productoAtributoId, input.idTipoAtributo, input.idTipoCalculo, input.nombre.trim(), nullableNumber(input.valor), nullableNumber(input.porcentaje), nullableNumber(input.valor2), nullableNumber(input.minimo), nullableNumber(input.maximo), Boolean(input.aplicaIva), Boolean(input.obligatorio), nullableText(input.proveedor), nullableNumber(input.prioridad) ?? 1]
+        [productoId, productoAtributoId, input.idTipoAtributo, input.idTipoCalculo, input.nombre.trim(), nullableNumber(input.valor), nullableNumber(input.porcentaje), nullableNumber(input.valor2), nullableNumber(input.minimo), nullableNumber(input.maximo), Boolean(input.aplicaIva), Boolean(input.obligatorio), nullableText(input.proveedor), nullableNumber(input.prioridad) ?? 1, input.modoCalculo ?? null, input.tipoLimite ?? 'MONTO']
       );
     }
     if (!updated.rowCount) {
       await client.query(
-        `insert into "Creditos"."TBL_PRODUCTO_CREDITO_ATRIBUTOS" (id_producto_credito, id_tipo_atributo, id_tipo_calculo, nombre, valor, porcentaje, valor2, minimo, maximo, aplica_iva, obligatorio, proveedor, prioridad)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-        [productoId, input.idTipoAtributo, input.idTipoCalculo, input.nombre.trim(), nullableNumber(input.valor), nullableNumber(input.porcentaje), nullableNumber(input.valor2), nullableNumber(input.minimo), nullableNumber(input.maximo), Boolean(input.aplicaIva), Boolean(input.obligatorio), nullableText(input.proveedor), nullableNumber(input.prioridad) ?? 1]
+        `insert into "Creditos"."TBL_PRODUCTO_CREDITO_ATRIBUTOS" (id_producto_credito, id_tipo_atributo, id_tipo_calculo, nombre, valor, porcentaje, valor2, minimo, maximo, aplica_iva, obligatorio, proveedor, prioridad, modo_calculo, tipo_limite)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+        [productoId, input.idTipoAtributo, input.idTipoCalculo, input.nombre.trim(), nullableNumber(input.valor), nullableNumber(input.porcentaje), nullableNumber(input.valor2), nullableNumber(input.minimo), nullableNumber(input.maximo), Boolean(input.aplicaIva), Boolean(input.obligatorio), nullableText(input.proveedor), nullableNumber(input.prioridad) ?? 1, input.modoCalculo ?? null, input.tipoLimite ?? 'MONTO']
       );
     }
     return listProductoAtributos(productoId);
@@ -770,13 +797,14 @@ export async function deleteProductoAtributo(productoId: number, productoAtribut
 }
 
 export async function createProductoAtributo(productoId: number, input: CreateProductoAtributoInput) {
-  validarEntradaAtributo(input);
   return withClient(async (client) => {
+    await ensureFormulaColumns(client);
     await ensureProducto(client, productoId);
+    input = await validarEntradaAtributo(client, input);
     await client.query(
-      `insert into "Creditos"."TBL_PRODUCTO_CREDITO_ATRIBUTOS" (id_producto_credito, id_tipo_atributo, id_tipo_calculo, nombre, valor, porcentaje, valor2, minimo, maximo, aplica_iva, obligatorio, proveedor, prioridad)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-      [productoId, input.idTipoAtributo, input.idTipoCalculo, input.nombre.trim(), nullableNumber(input.valor), nullableNumber(input.porcentaje), nullableNumber(input.valor2), nullableNumber(input.minimo), nullableNumber(input.maximo), Boolean(input.aplicaIva), Boolean(input.obligatorio), nullableText(input.proveedor), nullableNumber(input.prioridad) ?? 1]
+      `insert into "Creditos"."TBL_PRODUCTO_CREDITO_ATRIBUTOS" (id_producto_credito, id_tipo_atributo, id_tipo_calculo, nombre, valor, porcentaje, valor2, minimo, maximo, aplica_iva, obligatorio, proveedor, prioridad, modo_calculo, tipo_limite)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+      [productoId, input.idTipoAtributo, input.idTipoCalculo, input.nombre.trim(), nullableNumber(input.valor), nullableNumber(input.porcentaje), nullableNumber(input.valor2), nullableNumber(input.minimo), nullableNumber(input.maximo), Boolean(input.aplicaIva), Boolean(input.obligatorio), nullableText(input.proveedor), nullableNumber(input.prioridad) ?? 1, input.modoCalculo ?? null, input.tipoLimite ?? 'MONTO']
     );
     return listProductoAtributos(productoId);
   });

@@ -832,12 +832,12 @@ export async function listCreditos() {
 }
 async function calcularCreditoConfigurado(client, productoId, monto, plazo, tasaAprobada) {
     const result = await client.query(`select a.*, ta.des_tipo_atributo as tipo_atributo, tc.des_tipo_calculo as tipo_calculo,
-      tc.codigo as formula_codigo, tc.base_calculo, tc.operacion, tc.aplica_minimo, tc.aplica_maximo
+      tc.codigo as formula_codigo, tc.base_calculo, tc.operacion, tc.aplica_minimo, tc.aplica_maximo, tc.expresion, tc.multiplica_por_plazo, tc.requiere_valor, tc.requiere_valor2, tc.requiere_porcentaje
      from "Creditos"."TBL_PRODUCTO_CREDITO_ATRIBUTOS" a
      inner join "Creditos"."TBL_TIPOS_ATRIBUTO_CREDITO" ta on ta.id_tipo_atributo = a.id_tipo_atributo
      inner join "Creditos"."TBL_TIPOS_CALCULO_CREDITO" tc on tc.id_tipo_calculo = a.id_tipo_calculo
      where a.id_producto_credito = $1 order by a.prioridad, a.id_producto_atributo`, [productoId]);
-    const necesitaSmlmv = result.rows.some(row => row.base_calculo === 'SMLMV' || normalizeKey(row.tipo_calculo).includes('SMLMV'));
+    const necesitaSmlmv = result.rows.some(row => (row.modo_calculo === 'FORMULA' || !row.modo_calculo) && (row.base_calculo === 'SMLMV' || row.base_calculo === 'SMMLV' || /SM?MLV/.test(normalizeKey(row.tipo_calculo))));
     const necesitaIva = result.rows.some(row => row.aplica_iva);
     const smlmv = necesitaSmlmv ? await getParametroFinanciero(client, 'SMLMV', new Date(), false) : 0;
     const iva = necesitaIva ? await getParametroFinanciero(client, 'IVA', new Date(), false) : 0;

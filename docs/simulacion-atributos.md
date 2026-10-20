@@ -1,26 +1,32 @@
 # Simulacion por atributos del producto
 
-El motor src/modules/creditos/calculo-producto.ts se comparte entre simulacion, radicacion, aprobacion y liquidacion definitiva.
+El motor calculo-producto.ts se comparte entre simulacion, radicacion, aprobacion y liquidacion. Consulta los atributos y la formula asociada por identificador, sin tasas o cargos fijos del portal.
 
-- INTERES CORRIENTE representa un porcentaje mensual vencido; se aplica al saldo del capital real financiado. Debe existir exactamente uno.
-- Los atributos CREDITO se financian una vez. La base habitual de porcentajes es el monto solicitado; no se acumulan porcentajes sobre otros cargos.
-- Los atributos CUOTA distintos del interes se suman a cada cuota, sin aumentar el principal.
-- Las formulas consultan operacion, base_calculo, valores, porcentaje y limites del producto. Se admite porcentaje, valor fijo, valor por plazo y base por valor/divisor.
-- IVA se agrega una sola vez cuando aplica, utilizando el parametro financiero vigente. SMLMV tambien se consulta cuando la formula lo requiere. No se siembran parametros durante la simulacion.
-- Los importes se redondean a dos decimales; la ultima cuota ajusta el capital para cerrar el saldo en cero.
-- La tasa del simulador viene del producto. Una tasa negociada se aplica unicamente en la aprobacion explicita.
+## Modos
 
-POST /api/v1/portal/simulacion es publico, recibe idProductoCredito, montoSolicitado y plazo. Devuelve resumen, atributos y plan sin datos de clientes. Los formularios del portal consultan este endpoint y descartan respuestas obsoletas.
+- VALOR_FIJO: usa valor como monto del cargo. No interpreta ese monto como parametro de otra formula.
+- PORCENTAJE: aplica porcentaje sobre el monto solicitado.
+- FORMULA: evalua operacion, base_calculo, expresion, valor (parametro 1), valor2 (parametro 2), porcentaje y plazo segun la formula asociada. Puede no requerir valor ni porcentaje si su expresion usa BASE y/o PLAZO.
+- Sin modo guardado, se conserva compatibilidad con configuraciones antiguas. Un cero inactivo junto a un campo positivo se trata como null. Dos valores positivos son invalidos fuera del modo FORMULA.
+- INTERES CORRIENTE debe ser porcentaje mensual vencido y se aplica al saldo del capital real financiado.
 
-La funcion SQL existente generar_amortizacion(numeric,numeric,integer) queda intacta para compatibilidad con consumidores externos. Las llamadas de esta API se sustituyen por el motor compartido, porque esa firma no contiene el producto ni permite incorporar cargos por cuota. No se requiere una migracion de base de datos para este cambio.
+Los cargos CREDITO se suman una vez al capital. Los cargos CUOTA se agregan en cada cuota. Las formulas soportan todas las operaciones del editor y expresiones aritmeticas de BASE, VALOR1, VALOR2, PLAZO y PORCENTAJE, mediante un parser limitado sin eval. No se duplica el plazo cuando la operacion ya lo incluye. SALDO y CUOTA se eval?an por periodo; una formula financiada no puede depender circularmente de CUOTA.
 
-Los creditos historicos y las liquidaciones ya guardadas no se recalculan con este cambio. Una nueva liquidacion consulta configuracion vigente y guarda su desglose/plan como snapshot. El calendario de cobro utiliza capital, tasa, plazo y cargos de esa liquidacion. El tratamiento quincenal conserva la conversion existente de tasa mensual/2.
+IVA se agrega una sola vez despues de calcular el cargo y sus topes monetarios, solo cuando aplica_iva es verdadero. Se lee el parametro IVA vigente; SMLMV se consulta cuando la formula lo requiere. Importes a dos decimales y ajuste final para saldo cero.
 
-Pruebas: node --test scripts/test-calculo-producto.mjs
+## Limites de edad y monto
+
+Aplicar scripts/migrations/20261020-atributos-modo-limites.sql antes del despliegue. Agrega modo_calculo y tipo_limite, sin alterar tasas ni importes. Los limites 18/75 de la fianza de Libranza Plus se clasifican como EDAD conforme a la confirmacion del propietario. EDAD nunca recorta el importe del cargo; MONTO aplica topes monetarios. La simulacion publica muestra el rango y no confirma la edad del solicitante.
+
+El formulario guarda modo y tipo de limite explicitamente y conserva la formula asociada por id. Si un cliente anterior omite tipoLimite al editar, se conserva el tipo guardado. Los limites cero en monto representan un tope no configurado.
+
+## API y validacion
+
+POST /api/v1/portal/simulacion recibe idProductoCredito, montoSolicitado y plazo. Devuelve resumen, atributos y plan sin datos personales. El portal descarta respuestas obsoletas.
+
+La funcion SQL generar_amortizacion(numeric,numeric,integer) queda intacta para consumidores externos. Esta API utiliza el motor compartido. Las liquidaciones ya guardadas no se recalculan; cada nueva liquidacion guarda su desglose y plan.
+
+Pruebas: npm run test:calculo
 Compilacion: npm run build
 
-Verificacion de solo lectura con Libranza Plus configurado: solicitado 10.000.000, fianza 1,2%, seguro 1,5%, afiliacion 112.054, corretaje 1.600.000, capital real 11.982.054, interes mensual 2,13%, plazo 24, cuota inicial 642.871,99.
-
-Cada atributo debe configurar exactamente un campo: porcentaje o valor. Null/cadena vacia indican ausencia; cero es valido. El dato poblado selecciona el calculo aunque el nombre de la formula no coincida. En configuraciones por valor se conservan las operaciones explicitas de valor por plazo y base por valor/divisor. INTERES CORRIENTE requiere porcentaje mensual. La API valida tanto altas como ediciones y el motor rechaza configuraciones ambiguas preexistentes.
-
-Compatibilidad con formularios anteriores: si existe un campo positivo y el contrario es cero, ese cero se normaliza a null. Por ejemplo, valor=131456 y porcentaje=0 se calcula como valor fijo. La normalizacion se aplica al simular y al guardar; no se reescriben registros durante la simulacion. Dos valores positivos siguen siendo ambiguos y se rechazan.
+Verificado con los datos vigentes de Libranza Plus: solicitado 10.000.000; seguro (10.000.000/1.000.000)*500*12=60.000; fianza 10.000.000*38%*1,19=4.522.000. A 12 meses: capital real 15.402.000 y cuota 1.466.945,92. A 24 meses: seguro 120.000, capital real 15.462.000 y cuota 828.423,90. Tasa mensual vigente de la comprobacion: 2,1176%.
