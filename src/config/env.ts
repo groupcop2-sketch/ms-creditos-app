@@ -83,7 +83,9 @@ const envSchema = z.object({
   AWS_SECRET_ACCESS_KEY: z.string().optional(),
   AWS_SESSION_TOKEN: z.string().optional(),
   DIDIT_API_KEY: z.string().optional(),
-  DIDIT_WEBHOOK_SECRET: z.string().optional()
+  DIDIT_WEBHOOK_SECRET: z.string().optional(),
+  ACCOUNTING_API_URL: z.string().default('http://localhost:3000/api/v1'),
+  ACCOUNTING_COMPANY_ID: z.string().default('11111111-1111-1111-1111-111111111111')
 });
 
 export const env = envSchema.parse(process.env);

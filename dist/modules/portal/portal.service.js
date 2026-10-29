@@ -424,6 +424,14 @@ export async function listPortalCreditos(clienteId) {
         creditos
     };
 }
+export async function simularPortalCreditoPublico(input) {
+    return simularCredito({
+        idProductoCredito: input.idProductoCredito,
+        montoSolicitado: input.montoSolicitado,
+        plazo: input.plazo,
+        tasa: input.tasa ?? null
+    });
+}
 export async function simularPortalCredito(clienteId, input) {
     await getPortalClientById(clienteId);
     if (nullableText(input.codigoVendedor))

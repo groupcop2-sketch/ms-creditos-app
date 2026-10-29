@@ -26,6 +26,8 @@ import { docusignRoutes } from './modules/firmas/docusign.routes.js';
 import { jumioRoutes } from './modules/jumio/jumio.routes.js';
 import { diditRoutes } from './modules/didit/didit.routes.js';
 import { financierasRoutes } from './modules/financieras/financieras.routes.js';
+import { contabilidadRoutes } from './modules/contabilidad/contabilidad.routes.js';
+import { libranzaWorkflowRoutes } from './modules/libranza-workflow/libranza-workflow.routes.js';
 async function main() {
     const app = Fastify({
         logger: true,
@@ -98,7 +100,9 @@ async function main() {
                 { name: 'Security', description: 'Autenticación, usuarios, roles y permisos' },
                 { name: 'Créditos', description: 'Gestión de créditos y documentos' },
                 { name: 'Empresas', description: 'Gestión de empresas y pagadurías' },
-                { name: 'Portal', description: 'Operaciones del portal de clientes' }
+                { name: 'Portal', description: 'Operaciones del portal de clientes' },
+                { name: 'Libranza Workflow', description: 'Orquestación del ciclo de crédito en 10 pasos con los 5 actores del modelo' },
+                { name: 'Contabilidad NIIF', description: 'Integración contable de partida doble, eventos de desembolso y recaudo (NexusERP)' }
             ]
         }
     });
@@ -138,6 +142,8 @@ async function main() {
     await app.register(diditRoutes, { prefix: '/api' });
     await app.register(financierasRoutes, { prefix: '/api/v1/financieras' });
     await app.register(financierasRoutes, { prefix: '/api/v1/integraciones-financiera' });
+    await app.register(contabilidadRoutes, { prefix: '/api/v1/contabilidad' });
+    await app.register(libranzaWorkflowRoutes, { prefix: '/api/v1/libranza/workflow' });
     app.get('/api/v1', async () => ({
         name: 'creditos-api',
         version: '0.1.0'

@@ -128,6 +128,15 @@ export async function ensureFinancieraTables(): Promise<void> {
         'https://verification.didit.me/v3',
         '{"campos": ["api_key", "workflow_id", "webhook_secret"], "workflow_default": "e42a2607-2f9f-475e-a5b8-0cbfc0213b06"}'::jsonb,
         true
+      ),
+      (
+        'CONTABILIDAD',
+        'NexusERP Motor Contable NIIF',
+        'CONTABILIDAD_ERP',
+        'Despacho desacoplado de eventos operacionales (LIBRANZA_DESEMBOLSO, LIBRANZA_RECAUDO) con comprobantes de doble partida NIIF.',
+        'http://localhost:3000/api/v1',
+        '{"campos": ["company_id", "api_url", "functional_currency"], "company_default": "11111111-1111-1111-1111-111111111111"}'::jsonb,
+        true
       )
     on conflict (codigo) do update set
       nombre = excluded.nombre,

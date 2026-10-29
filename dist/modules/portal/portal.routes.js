@@ -1,7 +1,6 @@
-import { simularCredito } from '../creditos/creditos.service.js';
 import { z } from 'zod';
 import { SecurityError } from '../security/security.service.js';
-import { confirmPortalEmail, completePortalLaborProfile, crearSolicitudPortalCredito, getPortalClientById, listPortalCatalogs, listPortalCreditos, listPortalProductosCredito, loginPortalClient, requestPortalPasswordReset, registerPortalClient, resetPortalPassword, simularPortalCredito } from './portal.service.js';
+import { confirmPortalEmail, completePortalLaborProfile, crearSolicitudPortalCredito, getPortalClientById, listPortalCatalogs, listPortalCreditos, listPortalProductosCredito, loginPortalClient, requestPortalPasswordReset, registerPortalClient, resetPortalPassword, simularPortalCredito, simularPortalCreditoPublico } from './portal.service.js';
 const registerSchema = z.object({
     identificacion: z.string().trim().min(4),
     primerNombre: z.string().trim().min(1),
@@ -48,6 +47,12 @@ const creditoPortalSchema = z.object({
     montoSolicitado: z.coerce.number().positive(),
     plazo: z.coerce.number().int().positive(),
     codigoVendedor: z.string().trim().nullable().optional()
+});
+const simulacionPublicaSchema = z.object({
+    idProductoCredito: z.coerce.number().int().positive(),
+    montoSolicitado: z.coerce.number().positive(),
+    plazo: z.coerce.number().int().positive(),
+    tasa: z.coerce.number().nonnegative().nullable().optional()
 });
 async function authenticatePortal(request, reply) {
     try {
@@ -100,9 +105,10 @@ export async function portalRoutes(app) {
         const body = laborProfileSchema.parse(request.body);
         return completePortalLaborProfile(user.clienteId, body);
     });
+    /** Simulación pública (landing / onboarding): incluye plan de amortización */
     app.post('/simulacion', async (request) => {
-        const body = creditoPortalSchema.pick({ idProductoCredito: true, montoSolicitado: true, plazo: true }).parse(request.body);
-        return simularCredito(body);
+        const body = simulacionPublicaSchema.parse(request.body);
+        return simularPortalCreditoPublico(body);
     });
     app.get('/productos', async () => {
         return listPortalProductosCredito();

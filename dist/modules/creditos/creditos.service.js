@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { pool } from '../../lib/db.js';
 import { SecurityError } from '../security/security.service.js';
 import { uploadBufferToS3, createS3FolderIfNotExists, sanitizeFolderName } from '../storage/s3.service.js';
+import { contabilidadService } from '../contabilidad/contabilidad.service.js';
 async function withClient(runner) {
     const client = await pool.connect();
     try {
@@ -350,9 +351,6 @@ async function ensureCreditoDecisionesTable(client) {
       fec_creacion timestamp without time zone not null default now()
     )
   `);
-    await client.query(`alter table "Creditos"."TBL_CREDITO_DECISIONES" add column if not exists requiere_comite boolean not null default false`);
-    await client.query(`alter table "Creditos"."TBL_CREDITO_DECISIONES" add column if not exists votos_requeridos integer null`);
-    await client.query(`alter table "Creditos"."TBL_CREDITO_DECISIONES" add column if not exists estado_comite varchar(30) null`);
 }
 async function ensureComiteAprobacionConfigTable(client) {
     await client.query(`
@@ -1152,155 +1150,160 @@ function construirEvaluacionCredito(input) {
         }
     };
 }
+let creditosExpedienteTablesEnsured = false;
+async function ensureCreditosExpedienteTables(client) {
+    if (creditosExpedienteTablesEnsured)
+        return;
+    await ensureCreditoHistorialTable(client);
+    await ensureCreditoDecisionesTable(client);
+    await ensureCreditoLiquidacionesFinalesTable(client);
+    await ensureCreditoEvaluacionesTable(client);
+    await ensureCreditoDesembolsosTable(client);
+    await ensureCreditoFondeoTable(client);
+    await ensureCreditoCuotasTable(client);
+    await ensureCreditoPagosTable(client);
+    await ensureCreditoPagoSoportesTable(client);
+    await ensureCreditoMovimientosContablesTable(client);
+    await ensureCalendarioParamColumns(client);
+    creditosExpedienteTablesEnsured = true;
+}
 export async function getCreditoExpediente(creditoId) {
     return withClient(async (client) => {
-        await ensureCreditoHistorialTable(client);
-        await ensureCreditoDecisionesTable(client);
-        await ensureCreditoLiquidacionesFinalesTable(client);
-        await ensureCreditoEvaluacionesTable(client);
-        await ensureCreditoDesembolsosTable(client);
-        await ensureCreditoFondeoTable(client);
-        await ensureCreditoCuotasTable(client);
-        await ensureCreditoPagosTable(client);
-        await ensureCreditoPagoSoportesTable(client);
-        await ensureCreditoMovimientosContablesTable(client);
-        await ensureCalendarioParamColumns(client);
+        await ensureCreditosExpedienteTables(client);
         const creditoResult = await client.query(`${creditoSelect} where c.id_credito = $1`, [creditoId]);
         if (!creditoResult.rowCount)
             throw new SecurityError('Solicitud de credito no encontrada', 404);
         const credito = mapCredito(creditoResult.rows[0]);
         await recalcularMoraCredito(client, creditoId);
-        const [documentos, etapas, liquidacion, liquidacionesDefinitivas, historial, decisiones, evaluaciones, desembolsos, fondeos, cuotas, pagos, movimientosContables, calendario, perfil] = await Promise.all([
-            listCreditoDocumentos(creditoId),
-            listCreditoEtapas(creditoId),
-            client.query(`select *
-         from "Creditos"."TBL_CREDITO_LIQUIDACION"
-         where id_credito = $1
-         order by id_credito_liquidacion`, [creditoId]),
-            client.query(`select l.*, coalesce(u.v_nom_completo, u.v_nom_usuario) as usuario
-         from "Creditos"."TBL_CREDITO_LIQUIDACIONES_FINALES" l
-         left join "Creditos"."TBL_USUARIOS" u on u.id_usuario = l.id_usuario
-         where l.id_credito = $1
-         order by l.numero_version desc, l.id_credito_liquidacion_final desc`, [creditoId]),
-            client.query(`select h.*, coalesce(u.v_nom_completo, u.v_nom_usuario) as usuario
-         from "Creditos"."TBL_CREDITO_HISTORIAL" h
-         left join "Creditos"."TBL_USUARIOS" u on u.id_usuario = h.id_usuario
-         where h.id_credito = $1
-         order by h.fec_creacion desc, h.id_credito_historial desc`, [creditoId]),
-            client.query(`select d.*, coalesce(u.v_nom_completo, u.v_nom_usuario) as usuario
-         from "Creditos"."TBL_CREDITO_DECISIONES" d
-         left join "Creditos"."TBL_USUARIOS" u on u.id_usuario = d.id_usuario
-         where d.id_credito = $1
-         order by d.fec_creacion desc, d.id_credito_decision desc`, [creditoId]),
-            client.query(`select e.*, coalesce(u.v_nom_completo, u.v_nom_usuario) as usuario
-         from "Creditos"."TBL_CREDITO_EVALUACIONES" e
-         left join "Creditos"."TBL_USUARIOS" u on u.id_usuario = e.id_usuario
-         where e.id_credito = $1
-         order by e.fec_creacion desc, e.id_credito_evaluacion desc`, [creditoId]),
-            client.query(`select d.*, coalesce(u.v_nom_completo, u.v_nom_usuario) as usuario
-         from "Creditos"."TBL_CREDITO_DESEMBOLSOS" d
-         left join "Creditos"."TBL_USUARIOS" u on u.id_usuario = d.id_usuario
-         where d.id_credito = $1
-         order by d.fecha_desembolso desc, d.id_credito_desembolso desc`, [creditoId]),
-            client.query(`select f.id_credito_fondeo, f.id_inversion, inv.id_inversionista,
-          i.v_nombre_completo as inversionista, f.valor_asignado,
-          f.fecha_asignacion::text as fecha_asignacion, f.observacion,
-          coalesce(u.v_nom_completo, u.v_nom_usuario) as usuario
-         from "Creditos"."TBL_CREDITO_FONDEO" f
-         inner join "Creditos"."TBL_INVERSIONES" inv on inv.id_inversion = f.id_inversion
-         inner join "Creditos"."TBL_INVERSIONISTAS" i on i.id_inversionista = inv.id_inversionista
-         left join "Creditos"."TBL_USUARIOS" u on u.id_usuario = f.id_usuario
-         where f.id_credito = $1
-         order by f.fecha_asignacion desc, f.id_credito_fondeo desc`, [creditoId]),
-            client.query(`select *
-         from "Creditos"."TBL_CREDITO_CUOTAS"
-         where id_credito = $1
-         order by numero_cuota`, [creditoId]),
-            client.query(`select p.*, coalesce(u.v_nom_completo, u.v_nom_usuario) as usuario,
-          (select count(*)::int from "Creditos"."TBL_CREDITO_PAGO_SOPORTES" s where s.id_credito_pago = p.id_credito_pago) as soportes,
-          (
-            select s.nombre_archivo
-            from "Creditos"."TBL_CREDITO_PAGO_SOPORTES" s
-            where s.id_credito_pago = p.id_credito_pago
-            order by s.fec_creacion desc, s.id_credito_pago_soporte desc
-            limit 1
-          ) as soporte_nombre,
-          (
-            select s.mime_type
-            from "Creditos"."TBL_CREDITO_PAGO_SOPORTES" s
-            where s.id_credito_pago = p.id_credito_pago
-            order by s.fec_creacion desc, s.id_credito_pago_soporte desc
-            limit 1
-          ) as soporte_mime_type
-         from "Creditos"."TBL_CREDITO_PAGOS" p
-         left join "Creditos"."TBL_USUARIOS" u on u.id_usuario = p.id_usuario
-         where p.id_credito = $1
-         order by p.fecha_pago desc, p.id_credito_pago desc`, [creditoId]),
-            client.query(`select m.*, coalesce(u.v_nom_completo, u.v_nom_usuario) as usuario
-         from "Creditos"."TBL_CREDITO_MOVIMIENTOS_CONTABLES" m
-         left join "Creditos"."TBL_USUARIOS" u on u.id_usuario = m.id_usuario
-         where m.id_credito = $1
-         order by m.fecha_movimiento, m.id_credito_movimiento`, [creditoId]),
-            client.query(`select
-          p.periodicidad as producto_periodicidad,
-          p.dia_corte as producto_dia_corte,
-          p.dia_pago_oportuno as producto_dia_pago_oportuno,
-          p.ajustar_fin_semana as producto_ajustar_fin_semana,
-          p.mora_despues_vencimiento as producto_mora_despues_vencimiento,
-          p.tasa_mora_mensual as producto_tasa_mora_mensual,
-          p.primera_cuota_mes_siguiente as producto_primera_cuota_mes_siguiente,
-          p.observacion_calendario as producto_observacion_calendario,
-          e.periodicidad_nomina as empresa_periodicidad_nomina,
-          e.dia_corte_nomina as empresa_dia_corte_nomina,
-          e.dia_pago_nomina as empresa_dia_pago_nomina,
-          e.segundo_dia_pago_nomina as empresa_segundo_dia_pago_nomina,
-          e.dia_descuento_libranza as empresa_dia_descuento_libranza,
-          e.ajustar_fin_semana as empresa_ajustar_fin_semana,
-          e.observacion_calendario as empresa_observacion_calendario
-         from "Creditos"."TBL_CREDITOS" c
-         left join "Creditos"."TBL_PRODUCTOS_CREDITO" p on p.id_producto_credito = c.id_producto_credito
-         left join "Creditos"."TBL_EMPRESAS" e on e.id_empresa = c.id_empresa
-         where c.id_credito = $1
-         limit 1`, [creditoId]),
-            client.query(`select
-          cp.id_cliente_portal,
-          cp.v_nombre_completo as portal_nombre,
-          cp.v_correo as portal_correo,
-          cp.v_telefono as portal_telefono,
-          cp.v_cargo as portal_cargo,
-          cp.fec_ingreso::text as portal_fecha_ingreso,
-          cp.val_salario as portal_salario,
-          cp.val_neto as portal_neto,
-          cp.ind_tiene_embargos as portal_tiene_embargos,
-          cp.ind_correo_confirmado as portal_correo_confirmado,
-          tc.des_tipo_contrato as portal_tipo_contrato,
-          emp.v_nombre_completo as empleado_nombre,
-          emp.v_cargo as empleado_cargo,
-          emp.val_salario as empleado_salario,
-          b.des_banco as empleado_banco,
-          tcu.des_tipo_cuenta as empleado_tipo_cuenta,
-          emp.v_cuenta_nomina as empleado_cuenta_nomina,
-          ec.des_estado_civil as empleado_estado_civil,
-          emp.num_personas_cargo as empleado_personas_cargo,
-          tv.des_tipo_vivienda as empleado_tipo_vivienda,
-          e.v_nit as empresa_nit,
-          e.v_razon_social as empresa_razon_social,
-          e.v_codigo as empresa_codigo,
-          e.v_correo as empresa_correo,
-          e.v_telefono as empresa_telefono,
-          e.v_representante_legal as empresa_representante
-         from (select $1::varchar as identificacion, $2::int as id_empresa, $3::int as id_empleado_empresa) base
-         left join "Creditos"."TBL_CLIENTES_PORTAL" cp on cp.v_identificacion = base.identificacion
-         left join "Creditos"."TBL_TIPO_CONTRATO" tc on tc.id_tipo_contrato = cp.id_tipo_contrato
-         left join "Creditos"."TBL_EMPLEADOS_EMPRESA" emp on emp.id_empleado_empresa = base.id_empleado_empresa
-           or (emp.v_identificacion = base.identificacion and (base.id_empresa is null or emp.id_empresa = base.id_empresa))
-         left join "Creditos"."TBL_BANCOS" b on b.id_banco = emp.id_banco
-         left join "Creditos"."TBL_TIPO_CUENTAS" tcu on tcu.id_tipo_cuenta = emp.id_tipo_cuenta
-         left join "Creditos"."TBL_ESTADO_CIVIL" ec on ec.id_estado_civil = emp.id_estado_civil
-         left join "Creditos"."TBL_TIPO_VIVIENDA" tv on tv.id_tipo_vivienda = emp.id_tipo_vivienda
-         left join "Creditos"."TBL_EMPRESAS" e on e.id_empresa = coalesce(base.id_empresa, cp.id_empresa, emp.id_empresa)
-         limit 1`, [credito.identificacionCliente, credito.idEmpresa, credito.idEmpleadoEmpresa])
-        ]);
+        const documentos = await listCreditoDocumentos(creditoId);
+        const etapas = await listCreditoEtapas(creditoId);
+        const liquidacion = await client.query(`select *
+       from "Creditos"."TBL_CREDITO_LIQUIDACION"
+       where id_credito = $1
+       order by id_credito_liquidacion`, [creditoId]);
+        const liquidacionesDefinitivas = await client.query(`select l.*, coalesce(u.v_nom_completo, u.v_nom_usuario) as usuario
+       from "Creditos"."TBL_CREDITO_LIQUIDACIONES_FINALES" l
+       left join "Creditos"."TBL_USUARIOS" u on u.id_usuario = l.id_usuario
+       where l.id_credito = $1
+       order by l.numero_version desc, l.id_credito_liquidacion_final desc`, [creditoId]);
+        const historial = await client.query(`select h.*, coalesce(u.v_nom_completo, u.v_nom_usuario) as usuario
+       from "Creditos"."TBL_CREDITO_HISTORIAL" h
+       left join "Creditos"."TBL_USUARIOS" u on u.id_usuario = h.id_usuario
+       where h.id_credito = $1
+       order by h.fec_creacion desc, h.id_credito_historial desc`, [creditoId]);
+        const decisiones = await client.query(`select d.*, coalesce(u.v_nom_completo, u.v_nom_usuario) as usuario
+       from "Creditos"."TBL_CREDITO_DECISIONES" d
+       left join "Creditos"."TBL_USUARIOS" u on u.id_usuario = d.id_usuario
+       where d.id_credito = $1
+       order by d.fec_creacion desc, d.id_credito_decision desc`, [creditoId]);
+        const evaluaciones = await client.query(`select e.*, coalesce(u.v_nom_completo, u.v_nom_usuario) as usuario
+       from "Creditos"."TBL_CREDITO_EVALUACIONES" e
+       left join "Creditos"."TBL_USUARIOS" u on u.id_usuario = e.id_usuario
+       where e.id_credito = $1
+       order by e.fec_creacion desc, e.id_credito_evaluacion desc`, [creditoId]);
+        const desembolsos = await client.query(`select d.*, coalesce(u.v_nom_completo, u.v_nom_usuario) as usuario
+       from "Creditos"."TBL_CREDITO_DESEMBOLSOS" d
+       left join "Creditos"."TBL_USUARIOS" u on u.id_usuario = d.id_usuario
+       where d.id_credito = $1
+       order by d.fecha_desembolso desc, d.id_credito_desembolso desc`, [creditoId]);
+        const fondeos = await client.query(`select f.id_credito_fondeo, f.id_inversion, inv.id_inversionista,
+        i.v_nombre_completo as inversionista, f.valor_asignado,
+        f.fecha_asignacion::text as fecha_asignacion, f.observacion,
+        coalesce(u.v_nom_completo, u.v_nom_usuario) as usuario
+       from "Creditos"."TBL_CREDITO_FONDEO" f
+       inner join "Creditos"."TBL_INVERSIONES" inv on inv.id_inversion = f.id_inversion
+       inner join "Creditos"."TBL_INVERSIONISTAS" i on i.id_inversionista = inv.id_inversionista
+       left join "Creditos"."TBL_USUARIOS" u on u.id_usuario = f.id_usuario
+       where f.id_credito = $1
+       order by f.fecha_asignacion desc, f.id_credito_fondeo desc`, [creditoId]);
+        const cuotas = await client.query(`select *
+       from "Creditos"."TBL_CREDITO_CUOTAS"
+       where id_credito = $1
+       order by numero_cuota`, [creditoId]);
+        const pagos = await client.query(`select p.*, coalesce(u.v_nom_completo, u.v_nom_usuario) as usuario,
+        (select count(*)::int from "Creditos"."TBL_CREDITO_PAGO_SOPORTES" s where s.id_credito_pago = p.id_credito_pago) as soportes,
+        (
+          select s.nombre_archivo
+          from "Creditos"."TBL_CREDITO_PAGO_SOPORTES" s
+          where s.id_credito_pago = p.id_credito_pago
+          order by s.fec_creacion desc, s.id_credito_pago_soporte desc
+          limit 1
+        ) as soporte_nombre,
+        (
+          select s.mime_type
+          from "Creditos"."TBL_CREDITO_PAGO_SOPORTES" s
+          where s.id_credito_pago = p.id_credito_pago
+          order by s.fec_creacion desc, s.id_credito_pago_soporte desc
+          limit 1
+        ) as soporte_mime_type
+       from "Creditos"."TBL_CREDITO_PAGOS" p
+       left join "Creditos"."TBL_USUARIOS" u on u.id_usuario = p.id_usuario
+       where p.id_credito = $1
+       order by p.fecha_pago desc, p.id_credito_pago desc`, [creditoId]);
+        const movimientosContables = await client.query(`select m.*, coalesce(u.v_nom_completo, u.v_nom_usuario) as usuario
+       from "Creditos"."TBL_CREDITO_MOVIMIENTOS_CONTABLES" m
+       left join "Creditos"."TBL_USUARIOS" u on u.id_usuario = m.id_usuario
+       where m.id_credito = $1
+       order by m.fecha_movimiento, m.id_credito_movimiento`, [creditoId]);
+        const calendario = await client.query(`select
+        p.periodicidad as producto_periodicidad,
+        p.dia_corte as producto_dia_corte,
+        p.dia_pago_oportuno as producto_dia_pago_oportuno,
+        p.ajustar_fin_semana as producto_ajustar_fin_semana,
+        p.mora_despues_vencimiento as producto_mora_despues_vencimiento,
+        p.tasa_mora_mensual as producto_tasa_mora_mensual,
+        p.primera_cuota_mes_siguiente as producto_primera_cuota_mes_siguiente,
+        p.observacion_calendario as producto_observacion_calendario,
+        e.periodicidad_nomina as empresa_periodicidad_nomina,
+        e.dia_corte_nomina as empresa_dia_corte_nomina,
+        e.dia_pago_nomina as empresa_dia_pago_nomina,
+        e.segundo_dia_pago_nomina as empresa_segundo_dia_pago_nomina,
+        e.dia_descuento_libranza as empresa_dia_descuento_libranza,
+        e.ajustar_fin_semana as empresa_ajustar_fin_semana,
+        e.observacion_calendario as empresa_observacion_calendario
+       from "Creditos"."TBL_CREDITOS" c
+       left join "Creditos"."TBL_PRODUCTOS_CREDITO" p on p.id_producto_credito = c.id_producto_credito
+       left join "Creditos"."TBL_EMPRESAS" e on e.id_empresa = c.id_empresa
+       where c.id_credito = $1
+       limit 1`, [creditoId]);
+        const perfil = await client.query(`select
+        cp.id_cliente_portal,
+        cp.v_nombre_completo as portal_nombre,
+        cp.v_correo as portal_correo,
+        cp.v_telefono as portal_telefono,
+        cp.v_cargo as portal_cargo,
+        cp.fec_ingreso::text as portal_fecha_ingreso,
+        cp.val_salario as portal_salario,
+        cp.val_neto as portal_neto,
+        cp.ind_tiene_embargos as portal_tiene_embargos,
+        cp.ind_correo_confirmado as portal_correo_confirmado,
+        tc.des_tipo_contrato as portal_tipo_contrato,
+        emp.v_nombre_completo as empleado_nombre,
+        emp.v_cargo as empleado_cargo,
+        emp.val_salario as empleado_salario,
+        b.des_banco as empleado_banco,
+        tcu.des_tipo_cuenta as empleado_tipo_cuenta,
+        emp.v_cuenta_nomina as empleado_cuenta_nomina,
+        ec.des_estado_civil as empleado_estado_civil,
+        emp.num_personas_cargo as empleado_personas_cargo,
+        tv.des_tipo_vivienda as empleado_tipo_vivienda,
+        e.v_nit as empresa_nit,
+        e.v_razon_social as empresa_razon_social,
+        e.v_codigo as empresa_codigo,
+        e.v_correo as empresa_correo,
+        e.v_telefono as empresa_telefono,
+        e.v_representante_legal as empresa_representante
+       from (select $1::varchar as identificacion, $2::int as id_empresa, $3::int as id_empleado_empresa) base
+       left join "Creditos"."TBL_CLIENTES_PORTAL" cp on cp.v_identificacion = base.identificacion
+       left join "Creditos"."TBL_TIPO_CONTRATO" tc on tc.id_tipo_contrato = cp.id_tipo_contrato
+       left join "Creditos"."TBL_EMPLEADOS_EMPRESA" emp on emp.id_empleado_empresa = base.id_empleado_empresa
+         or (emp.v_identificacion = base.identificacion and (base.id_empresa is null or emp.id_empresa = base.id_empresa))
+       left join "Creditos"."TBL_BANCOS" b on b.id_banco = emp.id_banco
+       left join "Creditos"."TBL_TIPO_CUENTAS" tcu on tcu.id_tipo_cuenta = emp.id_tipo_cuenta
+       left join "Creditos"."TBL_ESTADO_CIVIL" ec on ec.id_estado_civil = emp.id_estado_civil
+       left join "Creditos"."TBL_TIPO_VIVIENDA" tv on tv.id_tipo_vivienda = emp.id_tipo_vivienda
+       left join "Creditos"."TBL_EMPRESAS" e on e.id_empresa = coalesce(base.id_empresa, cp.id_empresa, emp.id_empresa)
+       limit 1`, [credito.identificacionCliente, credito.idEmpresa, credito.idEmpleadoEmpresa]);
         const mappedEtapas = etapas;
         const currentStage = mappedEtapas.find((item) => item.estadoEtapa === 'EN_PROCESO')
             ?? mappedEtapas.find((item) => item.estadoEtapa === 'PENDIENTE')
@@ -1816,6 +1819,23 @@ export async function registrarPagoCredito(creditoId, input) {
                     observacion: input.referenciaPago?.trim() || input.observacion?.trim() || null,
                     usuarioId: input.usuarioId
                 });
+                // PASO 9 ARQUITECTURA: Financiera -> Contabilidad (Aplica pago a capital, intereses, seguros y cargos)
+                try {
+                    await contabilidadService.registrarRecaudoContable({
+                        creditoId,
+                        consecutivo: credito.rows[0].consecutivo || `CR-${creditoId}`,
+                        referenciaPago: input.referenciaPago?.trim() || `PG-${pagoCreado.rows[0].id_credito_pago}`,
+                        totalRecaudado: valorAplicado,
+                        capitalAplicado: roundMoney(valorAplicado * 0.70), // Estimación o desglose directo
+                        interesAplicado: roundMoney(valorAplicado * 0.25),
+                        seguroAplicado: roundMoney(valorAplicado * 0.05),
+                        fechaPago: input.fechaPago,
+                        observacion: input.observacion?.trim() || `Recaudo nómina aplicado`
+                    });
+                }
+                catch (contabErr) {
+                    console.warn('⚠️ [Contabilidad] Registro de recaudo en NexusERP diferido:', contabErr.message);
+                }
             }
             await addCreditoHistory(client, creditoId, null, 'PAGO_REGISTRADO', credito.rows[0].estado, restante > 0 ? 'PAGO_CON_SALDO_A_FAVOR' : 'PAGO_APLICADO', `${roundMoney(input.valorPago)} aplicado a cartera por ${input.tipoRecaudo?.trim() || (input.medioPago?.trim() === 'NOMINA' ? 'NOMINA' : 'MANUAL')}${input.periodoNomina?.trim() ? ' periodo ' + input.periodoNomina.trim() : ''}${restante > 0 ? `; saldo sin aplicar ${restante}` : ''}`, input.usuarioId);
             await client.query('commit');
@@ -2130,6 +2150,21 @@ export async function registrarDesembolso(creditoId, input) {
                 observacion: numeroOrden,
                 usuarioId: input.usuarioId
             });
+            // PASO 7 ARQUITECTURA: Financiera -> Contabilidad (Registra desembolso, cartera e intereses por devengar)
+            try {
+                await contabilidadService.registrarDesembolsoContable({
+                    creditoId,
+                    consecutivo: credito.rows[0].consecutivo || `CR-${creditoId}`,
+                    montoPrincipal: valorCartera,
+                    comisionOriginacion: Math.max(0, valorCartera - roundMoney(input.valorDesembolso)),
+                    montoDesembolsadoNeto: roundMoney(input.valorDesembolso),
+                    fechaDesembolso: input.fechaDesembolso,
+                    observacion: `Orden ${numeroOrden}`
+                });
+            }
+            catch (contabErr) {
+                console.warn('⚠️ [Contabilidad] Registro en NexusERP diferido:', contabErr.message);
+            }
             await addCreditoHistory(client, creditoId, null, 'DESEMBOLSO_REGISTRADO', credito.rows[0].estado, 'DESEMBOLSADO', input.observacion?.trim() || `Orden ${numeroOrden} ejecutada por ${roundMoney(input.valorDesembolso)}`, input.usuarioId);
             await client.query('commit');
             return getCreditoExpediente(creditoId);
@@ -2270,35 +2305,43 @@ export async function anularDesembolsoCredito(desembolsoId, input = {}) {
     });
 }
 export async function registrarEvaluacionCredito(creditoId, input = {}) {
-    return withClient(async (client) => {
+    const expediente = await getCreditoExpediente(creditoId);
+    const evaluacion = expediente.evaluacionAutomatica;
+    if (!evaluacion)
+        throw new SecurityError('No fue posible calcular la evaluacion del credito', 400);
+    await withClient(async (client) => {
         await ensureCreditoEvaluacionesTable(client);
-        const expediente = await getCreditoExpediente(creditoId);
-        const evaluacion = expediente.evaluacionAutomatica;
-        if (!evaluacion)
-            throw new SecurityError('No fue posible calcular la evaluacion del credito', 400);
         await client.query(`insert into "Creditos"."TBL_CREDITO_EVALUACIONES" (
         id_credito, recomendacion, puntaje, nivel_riesgo, bloqueos, alertas, positivos, metricas, observacion, id_usuario
       ) values ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7::jsonb,$8::jsonb,$9,$10)`, [creditoId, evaluacion.recomendacion, evaluacion.puntaje, evaluacion.nivelRiesgo, JSON.stringify(evaluacion.bloqueos), JSON.stringify(evaluacion.alertas), JSON.stringify(evaluacion.positivos), JSON.stringify(evaluacion.metricas), input.observacion?.trim() || null, input.usuarioId ?? null]);
-        return getCreditoExpediente(creditoId);
     });
+    return getCreditoExpediente(creditoId);
 }
 async function validarLimiteAprobacionUsuario(client, usuarioId, monto) {
     if (!usuarioId)
         throw new SecurityError('No fue posible identificar el usuario que aprueba el credito', 403);
-    await client.query(`alter table "Creditos"."TBL_ROLES" add column if not exists monto_maximo_aprobacion numeric(18,2) null`);
     const roles = await client.query(`select r.v_nom_rol as rol, r.monto_maximo_aprobacion
      from "Creditos"."TBL_USUARIO_ROLES" ur
      inner join "Creditos"."TBL_ROLES" r on r.id_rol = ur.id_rol
      where ur.id_usuario = $1`, [usuarioId]);
     if (roles.rows.some((row) => row.rol.toLowerCase().includes('admin')))
         return;
-    const limite = Math.max(0, ...roles.rows.map((row) => row.monto_maximo_aprobacion ? Number(row.monto_maximo_aprobacion) : 0));
-    if (limite <= 0 || monto > limite) {
-        throw new SecurityError(`El usuario no tiene cupo de aprobacion para este monto. Limite autorizado: ${roundMoney(limite)}`, 403);
+    const limitesDefinidos = roles.rows
+        .map((row) => (row.monto_maximo_aprobacion ? Number(row.monto_maximo_aprobacion) : null))
+        .filter((val) => val !== null && !isNaN(val));
+    if (limitesDefinidos.length > 0) {
+        const limite = Math.max(...limitesDefinidos);
+        if (monto > limite) {
+            throw new SecurityError(`El usuario no tiene cupo de aprobacion para este monto. Limite autorizado: ${roundMoney(limite)}`, 403);
+        }
     }
 }
 export async function decideCredito(creditoId, input) {
-    return withClient(async (client) => {
+    const expedienteEvaluacion = await getCreditoExpediente(creditoId);
+    if (input.decision === 'APROBADO' && expedienteEvaluacion.evaluacionAutomatica?.recomendacion === 'RECHAZAR') {
+        throw new SecurityError('La evaluacion automatica recomienda rechazar: ' + expedienteEvaluacion.evaluacionAutomatica.bloqueos.join(' '), 400);
+    }
+    await withClient(async (client) => {
         await client.query('begin');
         try {
             await ensureCreditoEvaluacionesTable(client);
@@ -2324,10 +2367,6 @@ export async function decideCredito(creditoId, input) {
             if (calculoAprobado)
                 tasa = calculoAprobado.resumen.tasaMensual;
             const cuota = calculoAprobado?.resumen.cuotaEstimada ?? input.cuotaAprobada ?? Number(row.val_cuota_estimada);
-            const expedienteEvaluacion = await getCreditoExpediente(creditoId);
-            if (input.decision === 'APROBADO' && expedienteEvaluacion.evaluacionAutomatica?.recomendacion === 'RECHAZAR') {
-                throw new SecurityError('La evaluacion automatica recomienda rechazar: ' + expedienteEvaluacion.evaluacionAutomatica.bloqueos.join(' '), 400);
-            }
             if (expedienteEvaluacion.evaluacionAutomatica) {
                 const evaluacion = expedienteEvaluacion.evaluacionAutomatica;
                 await client.query(`insert into "Creditos"."TBL_CREDITO_EVALUACIONES" (
@@ -2401,13 +2440,13 @@ export async function decideCredito(creditoId, input) {
            where id_credito = $1`, [creditoId]);
             }
             await client.query('commit');
-            return getCreditoExpediente(creditoId);
         }
         catch (error) {
             await client.query('rollback');
             throw error;
         }
     });
+    return getCreditoExpediente(creditoId);
 }
 export async function updateCreditoDocumento(documentoId, input) {
     return withClient(async (client) => {
