@@ -1,4 +1,5 @@
 import { pool } from '../../lib/db.js';
+import { env } from '../../config/env.js';
 import { SecurityError } from '../security/security.service.js';
 
 export interface FinancieraRow {
@@ -137,6 +138,15 @@ export async function ensureFinancieraTables(): Promise<void> {
         'http://localhost:3000/api/v1',
         '{"campos": ["company_id", "api_url", "functional_currency"], "company_default": "11111111-1111-1111-1111-111111111111"}'::jsonb,
         true
+      ),
+      (
+        'AWS_S3',
+        'AWS S3 Storage',
+        'ALMACENAMIENTO',
+        'Almacenamiento en la nube de documentos, pagarés y biometría en Amazon S3. Cuando esté desactivada, los documentos se guardan automáticamente como URLs base64 en Supabase.',
+        'https://s3.us-east-2.amazonaws.com',
+        '{"campos": ["access_key_id", "secret_access_key", "bucket", "region", "session_token"], "bucket_default": "s3-demo-financiera-009040764532-us-east-2-an", "region_default": "us-east-2"}'::jsonb,
+        true
       )
     on conflict (codigo) do update set
       nombre = excluded.nombre,
@@ -154,6 +164,12 @@ export async function ensureFinancieraTables(): Promise<void> {
     cross join "Creditos"."TBL_INTEGRACIONES" i
     on conflict (id_financiera, id_integracion) do nothing;
   `);
+
+  try {
+    await pool.query('alter table if exists "Creditos"."TBL_CREDITO_DOCUMENTOS" alter column v_archivo_url type text');
+  } catch {
+    // Ignorar si la tabla aún no existe o no tiene permisos de alteración
+  }
 }
 
 // ==================== FINANCIERAS ====================
@@ -532,19 +548,29 @@ export async function verificarIntegracionActiva(
   }
 
   const row = res.rows[0];
-  const hasClient = Boolean(row.client_id?.trim() || row.api_key?.trim());
+  const isAwsS3 = codigoIntegracion.toUpperCase() === 'AWS_S3';
+
+  const clientId = row.client_id?.trim() || (isAwsS3 ? env.AWS_ACCESS_KEY_ID || null : null);
+  const clientSecret = row.client_secret?.trim() || (isAwsS3 ? env.AWS_SECRET_ACCESS_KEY || null : null);
+  const accountId = row.account_id?.trim() || (isAwsS3 ? env.AWS_S3_BUCKET || null : null);
+  const apiKey = row.api_key?.trim() || (isAwsS3 ? env.AWS_SESSION_TOKEN || null : null);
+  const urlBase = row.url_base?.trim() || (isAwsS3 ? env.AWS_S3_REGION || null : null);
+
+  const hasCredentials = isAwsS3
+    ? Boolean(clientId && clientSecret)
+    : Boolean(clientId || apiKey);
 
   return {
-    activa: row.ind_activo && hasClient,
+    activa: Boolean(row.ind_activo && hasCredentials),
     idFinanciera,
     nombreFinanciera,
-    clientId: row.client_id,
-    clientSecret: row.client_secret,
-    accountId: row.account_id,
-    apiKey: row.api_key,
+    clientId,
+    clientSecret,
+    accountId,
+    apiKey,
     webhookUrl: row.webhook_url,
-    ambiente: row.ambiente,
-    urlBase: row.url_base,
+    ambiente: row.ambiente || 'PRODUCCION',
+    urlBase,
     datosConexion: row.datos_conexion || {}
   };
 }

@@ -6,7 +6,9 @@ import { SecurityError } from '../security/security.service.js';
 import {
   uploadBufferToS3,
   createS3FolderIfNotExists,
-  sanitizeFolderName
+  sanitizeFolderName,
+  guardarDocumentoOBase64,
+  parseBase64Image
 } from '../storage/s3.service.js';
 import { contabilidadService } from '../contabilidad/contabilidad.service.js';
 
@@ -1639,7 +1641,7 @@ export async function listCreditoDocumentos(creditoId: number) {
       requiereValidacion: row.requiere_validacion,
       estadoDocumento: row.estado_documento,
       archivoUrl: row.v_archivo_url,
-      archivoNombre: row.archivo_nombre,
+      archivoNombre: row.archivo_nombre || (row.v_archivo_url ? `${row.documento.toLowerCase().replace(/[^a-z0-9]/g, '_')}.pdf` : null),
       archivoMime: row.archivo_mime,
       archivoTamano: row.archivo_tamano
     }));
@@ -3451,31 +3453,24 @@ export async function uploadCreditoDocumento(documentoId: number, input: UploadC
         ]
       );
 
-      // Obtener el número del crédito (consecutivo) para la carpeta de S3
+      // Obtener el número del crédito (consecutivo) para la carpeta de almacenamiento
       const credRes = await client.query<{ consecutivo: string }>(
         `select consecutivo from "Creditos"."TBL_CREDITOS" where id_credito = $1 limit 1`,
         [row.id_credito]
       );
       const numeroCredito = (credRes.rows[0]?.consecutivo || `CR-${row.id_credito}`);
-      const carpetaCredito = sanitizeFolderName(numeroCredito);
 
-      let archivoUrl = `db:${hash}`;
-      try {
-        await createS3FolderIfNotExists(carpetaCredito);
-        const s3Upload = await uploadBufferToS3({
-          buffer: input.content,
-          folder: carpetaCredito,
-          fileName: input.fileName,
-          contentType: input.mimeType,
-          creditoId: row.id_credito,
-          metadata: { 'tipo-documento': row.documento }
-        });
-        if (s3Upload?.url) {
-          archivoUrl = s3Upload.url;
-        }
-      } catch (s3Err: any) {
-        console.warn('Advertencia al respaldar documento en S3:', s3Err.message);
-      }
+      // Guarda en AWS S3 si está activa la integración, o en una URL base64 en Supabase si está desactivada
+      const uploadResult = await guardarDocumentoOBase64({
+        buffer: input.content,
+        fileName: input.fileName,
+        contentType: input.mimeType,
+        creditoId: row.id_credito,
+        numeroCredito,
+        metadata: { 'tipo-documento': row.documento }
+      });
+
+      const archivoUrl = uploadResult.url;
 
       await client.query(
         `update "Creditos"."TBL_CREDITO_DOCUMENTOS"
@@ -3493,7 +3488,7 @@ export async function uploadCreditoDocumento(documentoId: number, input: UploadC
         'DOCUMENTO_CARGADO',
         row.estado_documento,
         'CARGADO',
-        input.observacion?.trim() || `${row.documento}: ${input.fileName}`,
+        input.observacion?.trim() || `${row.documento}: ${input.fileName} (${uploadResult.storage === 'AWS_S3' ? 'AWS S3' : 'Supabase Base64'})`,
         input.usuarioId
       );
 
@@ -3521,7 +3516,34 @@ export async function getCreditoDocumentoArchivo(documentoId: number) {
        limit 1`,
       [documentoId]
     );
-    if (!result.rowCount) throw new SecurityError('Este documento no tiene archivo cargado', 404);
-    return result.rows[0];
+    if (result.rowCount) {
+      return result.rows[0];
+    }
+
+    // Si no está en TBL_CREDITO_DOCUMENTO_ARCHIVOS, verificar v_archivo_url en TBL_CREDITO_DOCUMENTOS
+    const docRow = await client.query<{
+      v_archivo_url: string | null;
+      documento: string;
+    }>(
+      `select cd.v_archivo_url, d.des_documento as documento
+       from "Creditos"."TBL_CREDITO_DOCUMENTOS" cd
+       inner join "Creditos"."TBL_DOCUMENTOS_CREDITO" d on d.id_documento_credito = cd.id_documento_credito
+       where cd.id_credito_documento = $1`,
+      [documentoId]
+    );
+
+    if (docRow.rowCount && docRow.rows[0].v_archivo_url) {
+      const url = docRow.rows[0].v_archivo_url;
+      if (url.startsWith('data:')) {
+        const { buffer, mimeType, extension } = parseBase64Image(url);
+        return {
+          nombre_archivo: `${docRow.rows[0].documento.toLowerCase().replace(/[^a-z0-9]/g, '_')}.${extension}`,
+          mime_type: mimeType,
+          contenido: buffer
+        };
+      }
+    }
+
+    throw new SecurityError('Este documento no tiene archivo cargado', 404);
   });
 }
