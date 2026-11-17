@@ -155,8 +155,8 @@ async function getActiveStateId() {
 
 export async function listPortalCatalogs() {
   const [tiposIdentificacion, tiposContrato, empresas, cargos] = await Promise.all([
-    pool.query('select id_tip_identificacion as id, v_sigla_identificacion as sigla, v_des_identificacion as descripcion from "Creditos"."TBL_TIP_IDENTIFICACIONES" order by v_des_identificacion'),
-    pool.query('select id_tipo_contrato as id, des_tipo_contrato as nombre from "Creditos"."TBL_TIPO_CONTRATO" order by des_tipo_contrato'),
+    pool.query('select id_tip_identificacion as id, v_sigla_identificacion as sigla, v_des_identificacion as descripcion from "Creditos"."TBL_TIP_IDENTIFICACIONES" where activo order by v_des_identificacion'),
+    pool.query('select id_tipo_contrato as id, des_tipo_contrato as nombre from "Creditos"."TBL_TIPO_CONTRATO" where activo order by des_tipo_contrato'),
     pool.query('select id_empresa as id, v_codigo as codigo, v_razon_social as nombre from "Creditos"."TBL_EMPRESAS" order by v_razon_social'),
     pool.query('select id_cargo as id, des_cargo as nombre from "Creditos"."TBL_CARGOS" where id_estado is null or id_estado = 1 order by des_cargo').catch(() => ({ rows: [] }))
   ]);

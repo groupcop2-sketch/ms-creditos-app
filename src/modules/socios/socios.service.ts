@@ -410,7 +410,7 @@ export async function listSociosCatalogs() {
         'select id_banco as id, des_banco as nombre from "Creditos"."TBL_BANCOS" order by des_banco'
       ),
       client.query<CatalogRow>(
-        'select id_tipo_cuenta as id, des_tipo_cuenta as nombre from "Creditos"."TBL_TIPO_CUENTAS" order by des_tipo_cuenta'
+        'select id_tipo_cuenta as id, des_tipo_cuenta as nombre from "Creditos"."TBL_TIPO_CUENTAS" where activo order by des_tipo_cuenta'
       )
     ]);
 

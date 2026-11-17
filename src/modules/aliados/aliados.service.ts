@@ -324,8 +324,8 @@ export async function listAliadosCatalogs() {
   return withClient(async (client) => {
     const [bancos, tiposCuenta, generos] = await Promise.all([
       client.query<CatalogRow>('select id_banco as id, des_banco as nombre from "Creditos"."TBL_BANCOS" order by des_banco'),
-      client.query<CatalogRow>('select id_tipo_cuenta as id, des_tipo_cuenta as nombre from "Creditos"."TBL_TIPO_CUENTAS" order by des_tipo_cuenta'),
-      client.query<GenderCatalogRow>('select cod_genero as id, des_genero as nombre from "Creditos"."TBL_GENEROS" order by des_genero')
+      client.query<CatalogRow>('select id_tipo_cuenta as id, des_tipo_cuenta as nombre from "Creditos"."TBL_TIPO_CUENTAS" where activo order by des_tipo_cuenta'),
+      client.query<GenderCatalogRow>('select cod_genero as id, des_genero as nombre from "Creditos"."TBL_GENEROS" where activo order by des_genero')
     ]);
 
     return {

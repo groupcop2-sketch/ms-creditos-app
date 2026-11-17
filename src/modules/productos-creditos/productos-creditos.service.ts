@@ -525,10 +525,10 @@ export async function listProductosCreditoCatalogs() {
   return withClient(async (client) => {
     await ensureFormulaColumns(client);
     const [tiposCredito, tiposAtributo, tiposCalculo, documentos, etapas, libranzeras] = await Promise.all([
-      client.query<CatalogRow>('select id_tipo_credito as id, des_tipo_credito as nombre from "Creditos"."TBL_TIPOS_CREDITO" order by des_tipo_credito'),
-      client.query<CatalogRow>('select id_tipo_atributo as id, des_tipo_atributo as nombre from "Creditos"."TBL_TIPOS_ATRIBUTO_CREDITO" order by des_tipo_atributo'),
+      client.query<CatalogRow>('select id_tipo_credito as id, des_tipo_credito as nombre from "Creditos"."TBL_TIPOS_CREDITO" where activo order by des_tipo_credito'),
+      client.query<CatalogRow>('select id_tipo_atributo as id, des_tipo_atributo as nombre from "Creditos"."TBL_TIPOS_ATRIBUTO_CREDITO" where activo order by des_tipo_atributo'),
       client.query<FormulaCatalogRow>('select id_tipo_calculo as id, des_tipo_calculo as nombre, codigo, base_calculo, operacion, requiere_valor, requiere_valor2, requiere_porcentaje, aplica_minimo, aplica_maximo, activo, expresion, multiplica_por_plazo from "Creditos"."TBL_TIPOS_CALCULO_CREDITO" where coalesce(activo, true) = true order by des_tipo_calculo'),
-      client.query<CatalogRow>('select id_documento_credito as id, des_documento as nombre from "Creditos"."TBL_DOCUMENTOS_CREDITO" order by des_documento'),
+      client.query<CatalogRow>('select id_documento_credito as id, des_documento as nombre from "Creditos"."TBL_DOCUMENTOS_CREDITO" where activo order by des_documento'),
       client.query<CatalogRow>('select id_etapa_credito as id, des_etapa as nombre from "Creditos"."TBL_ETAPAS_CREDITO" order by id_etapa_credito'),
       client.query<CatalogRow>('select id_libranzera as id, v_razon_social as nombre from "Creditos"."TBL_LIBRANZERAS" order by v_razon_social')
     ]);

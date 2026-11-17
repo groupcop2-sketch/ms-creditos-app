@@ -435,13 +435,13 @@ export async function listAddressCatalogs() {
   return withClient(async (client) => {
     const [tiposVia, letras, ciudades] = await Promise.all([
       client.query<AddressCatalogRow>(
-        'select id_tipo_via as id, des_tipo_via as nombre from "Creditos"."TBL_TIPO_VIA" order by des_tipo_via'
+        'select id_tipo_via as id, des_tipo_via as nombre from "Creditos"."TBL_TIPO_VIA" where activo order by des_tipo_via'
       ),
       client.query<AddressCatalogRow>(
-        'select id_letra_dir as id, des_letra as nombre from "Creditos"."TBL_LETRA_DIR" order by des_letra'
+        'select id_letra_dir as id, des_letra as nombre from "Creditos"."TBL_LETRA_DIR" where activo order by des_letra'
       ),
       client.query<AddressCatalogRow>(
-        'select id_ciudad as id, v_nom_ciudad as nombre from "Creditos"."TBL_CIUDADES" order by v_nom_ciudad limit 300'
+        'select id_ciudad as id, v_nom_ciudad as nombre from "Creditos"."TBL_CIUDADES" where activo order by v_nom_ciudad limit 300'
       )
     ]);
 
@@ -457,19 +457,19 @@ export async function listEmployeeCatalogs() {
   return withClient(async (client) => {
     const [tiposContrato, bancos, tiposCuenta, estadosCivil, tiposVivienda, cargos] = await Promise.all([
       client.query<AddressCatalogRow>(
-        'select id_tipo_contrato as id, des_tipo_contrato as nombre from "Creditos"."TBL_TIPO_CONTRATO" order by des_tipo_contrato'
+        'select id_tipo_contrato as id, des_tipo_contrato as nombre from "Creditos"."TBL_TIPO_CONTRATO" where activo order by des_tipo_contrato'
       ),
       client.query<AddressCatalogRow>(
         'select id_banco as id, des_banco as nombre from "Creditos"."TBL_BANCOS" order by des_banco'
       ),
       client.query<AddressCatalogRow>(
-        'select id_tipo_cuenta as id, des_tipo_cuenta as nombre from "Creditos"."TBL_TIPO_CUENTAS" order by des_tipo_cuenta'
+        'select id_tipo_cuenta as id, des_tipo_cuenta as nombre from "Creditos"."TBL_TIPO_CUENTAS" where activo order by des_tipo_cuenta'
       ),
       client.query<AddressCatalogRow>(
-        'select id_estado_civil as id, des_estado_civil as nombre from "Creditos"."TBL_ESTADO_CIVIL" order by des_estado_civil'
+        'select id_estado_civil as id, des_estado_civil as nombre from "Creditos"."TBL_ESTADO_CIVIL" where activo order by des_estado_civil'
       ),
       client.query<AddressCatalogRow>(
-        'select id_tipo_vivienda as id, des_tipo_vivienda as nombre from "Creditos"."TBL_TIPO_VIVIENDA" order by des_tipo_vivienda'
+        'select id_tipo_vivienda as id, des_tipo_vivienda as nombre from "Creditos"."TBL_TIPO_VIVIENDA" where activo order by des_tipo_vivienda'
       ),
       client.query<AddressCatalogRow>(
         'select id_cargo as id, des_cargo as nombre from "Creditos"."TBL_CARGOS" where id_estado is null or id_estado = 1 order by des_cargo'
