@@ -166,7 +166,15 @@ export async function ensureFinancieraTables(): Promise<void> {
   `);
 
   try {
-    await pool.query('alter table if exists "Creditos"."TBL_CREDITO_DOCUMENTOS" alter column v_archivo_url type text');
+    // ALTER takes an exclusive table lock even when the type already matches; running it while a document
+    // upload transaction holds a row lock on this table stalled uploads ~2 min. Only alter when needed.
+    const column = await pool.query<{ data_type: string }>(
+      `select data_type from information_schema.columns
+       where table_schema = 'Creditos' and table_name = 'TBL_CREDITO_DOCUMENTOS' and column_name = 'v_archivo_url'`
+    );
+    if (column.rows[0] && column.rows[0].data_type !== 'text') {
+      await pool.query('alter table "Creditos"."TBL_CREDITO_DOCUMENTOS" alter column v_archivo_url type text');
+    }
   } catch {
     // Ignorar si la tabla aún no existe o no tiene permisos de alteración
   }

@@ -1,4 +1,6 @@
 import { calcularProducto, type AtributoCalculo } from './calculo-producto.js';
+import { hasEstudioCredito } from './estudio-credito.js';
+import { countSoportesClientePendientes } from './soportes-cliente.js';
 import crypto from 'node:crypto';
 import type { ClientLike } from '../../lib/db.js';
 import { pool } from '../../lib/db.js';
@@ -616,14 +618,27 @@ function normalizeKey(value: string) {
   return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
 }
 
-function isDocumentationStage(value: string) {
+// "Validación documental": reviews what the client uploaded in the portal (identity, purchase certificates).
+function isClientDocsStage(value: string) {
   const key = normalizeKey(value);
-  return key.includes('DOCUMENT') || key.includes('SOPORTE') || key.includes('FIRMA');
+  return key.includes('VALIDACION') && key.includes('DOCUMENT');
+}
+
+function isStudyStage(value: string) {
+  const key = normalizeKey(value);
+  return key.includes('ESTUDIO') || key.includes('ANALISIS');
 }
 
 function isApprovalStage(value: string) {
   const key = normalizeKey(value);
-  return key.includes('APROB') || key.includes('COMITE') || key.includes('ANALISIS') || key.includes('ESTUDIO');
+  return key.includes('APROB') || key.includes('COMITE') || key.includes('VISACION');
+}
+
+// Signing documents (contract, authorization, promissory note, insurance) are required from the approval stage on.
+function isDocumentationStage(value: string) {
+  const key = normalizeKey(value);
+  if (isClientDocsStage(value)) return false;
+  return key.includes('DOCUMENT') || key.includes('SOPORTE') || key.includes('FIRMA') || isApprovalStage(value);
 }
 
 function isSignatureStage(value: string) {
@@ -2203,6 +2218,9 @@ export async function updateCreditoEtapa(etapaId: number, input: UpdateCreditoEt
       const etapa = etapaResult.rows[0];
       const previousState = etapa.estado_etapa;
       const nextState = input.estado;
+      if (previousState === 'APROBADA' || previousState === 'RECHAZADA') {
+        throw new SecurityError(`La etapa ${etapa.etapa} ya esta ${previousState.toLowerCase()} y no se puede modificar`, 409);
+      }
       const finishDate = ['APROBADA', 'DEVUELTA', 'RECHAZADA'].includes(nextState) ? 'now()' : 'null';
 
       if (nextState === 'APROBADA') {
@@ -2214,6 +2232,14 @@ export async function updateCreditoEtapa(etapaId: number, input: UpdateCreditoEt
         );
         if (Number(previousPending.rows[0]?.total ?? 0) > 0) {
           throw new SecurityError('Primero debes aprobar las etapas anteriores del credito', 400);
+        }
+
+        if (isClientDocsStage(etapa.etapa) && (await countSoportesClientePendientes(client, etapa.id_credito)) > 0) {
+          throw new SecurityError('No puedes aprobar la validacion documental: hay documentos del cliente pendientes o rechazados', 400);
+        }
+
+        if (isStudyStage(etapa.etapa) && !(await hasEstudioCredito(client, etapa.id_credito))) {
+          throw new SecurityError('Antes de aprobar el estudio de credito debes guardar el calculo de capacidad de pago', 400);
         }
 
         if (isDocumentationStage(etapa.etapa)) {

@@ -3,9 +3,11 @@ import { env } from '../config/env.js';
 
 type MailInput = {
   to: string;
+  cc?: string;
   subject: string;
   html: string;
   text: string;
+  attachments?: Array<{ filename: string; content: Buffer; contentType?: string }>;
 };
 
 export function isMailConfigured() {
@@ -33,9 +35,11 @@ export async function sendMail(input: MailInput) {
   const sendPromise = transporter.sendMail({
     from: env.SMTP_FROM || env.SMTP_USER,
     to: input.to,
+    cc: input.cc || undefined,
     subject: input.subject,
     html: input.html,
-    text: input.text
+    text: input.text,
+    attachments: input.attachments
   });
 
   try {

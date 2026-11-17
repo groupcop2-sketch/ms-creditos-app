@@ -3,6 +3,7 @@ import { pool } from '../../lib/db.js';
 import { env } from '../../config/env.js';
 import { SecurityError } from '../security/security.service.js';
 import { verificarIntegracionActiva } from '../financieras/financieras.service.js';
+import { ensureSoportesClienteTables, insertSoporteCliente, type TipoSoporte } from '../creditos/soportes-cliente.js';
 import {
   uploadBase64ImageToS3,
   getS3BucketConfig,
@@ -550,8 +551,12 @@ export async function guardarDocumentosManuales(input: GuardarDocumentosManuales
       coalesce(v_telefono_cliente, '') as v_telefono
      from "Creditos"."TBL_CREDITOS"
      where id_credito = $1
+       -- a portal client may only upload to their own credit (credits are linked by identification)
+       and ($2::int is null or v_identificacion_cliente = (
+         select v_identificacion from "Creditos"."TBL_CLIENTES_PORTAL" where id_cliente_portal = $2
+       ))
      limit 1`,
-    [creditoId]
+    [creditoId, clienteId ?? null]
   );
 
   if (!creditoRes.rowCount) {
@@ -694,6 +699,41 @@ export async function guardarDocumentosManuales(input: GuardarDocumentosManuales
       ]
     );
     idVerificacion = insertRes.rows[0].id_jumio_verificacion;
+  }
+
+  // 3b. Client identity files become reviewable supports for the "Validación documental" stage.
+  const identidad: Array<[TipoSoporte, string | undefined | null]> = [
+    ['CEDULA_FRENTE', documentoFrente],
+    ['CEDULA_REVERSO', documentoReverso],
+    ['FOTO_ROSTRO', fotoRostro]
+  ];
+  const soportesClient = await pool.connect();
+  try {
+    await soportesClient.query('begin');
+    await ensureSoportesClienteTables(soportesClient);
+    // A new upload replaces the previous identity files of this credit.
+    await soportesClient.query(
+      `delete from "Creditos"."TBL_CREDITO_SOPORTES_CLIENTE"
+       where id_credito = $1 and tipo in ('CEDULA_FRENTE', 'CEDULA_REVERSO', 'FOTO_ROSTRO')`,
+      [creditoId]
+    );
+    for (const [tipo, data] of identidad) {
+      if (!data) continue;
+      const parsed = parseBase64Image(data);
+      await insertSoporteCliente(soportesClient, {
+        creditoId,
+        tipo,
+        nombre: `${tipo.toLowerCase()}.${parsed.extension}`,
+        mimeType: parsed.mimeType,
+        buffer: parsed.buffer
+      });
+    }
+    await soportesClient.query('commit');
+  } catch (error) {
+    await soportesClient.query('rollback');
+    throw error;
+  } finally {
+    soportesClient.release();
   }
 
   // 4. Link URL to TBL_CREDITO_DOCUMENTOS and save to TBL_CREDITO_DOCUMENTO_ARCHIVOS

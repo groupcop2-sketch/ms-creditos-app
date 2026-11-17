@@ -1,6 +1,10 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { JwtUserPayload } from '../../types/auth.js';
+import { listCreditoEstudios, registrarEstudioCredito } from './estudio-credito.js';
+import { getSoporteClienteArchivo, listSoportesCliente, revisarSoporteCliente } from './soportes-cliente.js';
+import { getDocumentoAdicionalArchivo, listDocumentosAdicionales, subirDocumentoAdicional } from './documentos-adicionales.js';
+import { enviarCartaVisacion, getDatosVisacion, getVisacionPdf, listVisaciones, previewCartaVisacion } from './visacion.js';
 import {
   createCredito,
   anularDesembolsoCredito,
@@ -186,6 +190,30 @@ export async function creditosRoutes(app: FastifyInstance) {
     return getCreditoExpediente(params.id);
   });
 
+  app.get('/:id/estudios', { preHandler: [app.authenticate, requirePermission('creditos:read')] }, async (request) => {
+    const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    return listCreditoEstudios(params.id);
+  });
+
+  app.post('/:id/estudios', { preHandler: [app.authenticate, requirePermission('creditos:create')] }, async (request) => {
+    const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    const monto = z.number().min(0).max(1e12).optional();
+    const body = z.object({
+      tipo: z.enum(['LIBRANZA', 'LIBRE_INVERSION']),
+      variables: z.object({
+        salario: monto,
+        aportesLey: monto,
+        deduccionesNomina: monto,
+        ingresosDemostrables: monto,
+        obligacionesCentrales: monto
+      }),
+      porcentaje: z.number().gt(0).max(100).optional(),
+      observacion: z.string().max(1000).nullish()
+    }).parse(request.body);
+    const user = request.user as JwtUserPayload | undefined;
+    return registrarEstudioCredito(params.id, { ...body, usuarioId: user?.sub ? Number(user.sub) : null });
+  });
+
   app.post('/:id/evaluacion', { preHandler: [app.authenticate, requirePermission('creditos:create')] }, async (request) => {
     const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
     const body = evaluacionSchema.parse(request.body ?? {});
@@ -322,6 +350,94 @@ export async function creditosRoutes(app: FastifyInstance) {
       .header('Content-Type', file.mime_type)
       .header('Content-Disposition', `inline; filename="${file.nombre_archivo}"`)
       .send(file.contenido);
+  });
+
+  const extrasVisacionSchema = z.object({
+    ciudad: z.string().trim().max(120),
+    entidadFinanciera: z.string().trim().max(200),
+    entidadOperadora: z.string().trim().max(200),
+    firmanteNombre: z.string().trim().max(200),
+    firmanteCargo: z.string().trim().max(120)
+  });
+
+  app.get('/:id/visacion', { preHandler: [app.authenticate, requirePermission('creditos:read')] }, async (request) => {
+    const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    const [info, visaciones] = await Promise.all([getDatosVisacion(params.id), listVisaciones(params.id)]);
+    return { ...info, visaciones };
+  });
+
+  app.post('/:id/visacion/preview', { preHandler: [app.authenticate, requirePermission('creditos:read')] }, async (request, reply) => {
+    const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    const file = await previewCartaVisacion(params.id, extrasVisacionSchema.parse(request.body));
+    return reply.header('Content-Type', 'application/pdf').header('Content-Disposition', `inline; filename="${file.nombreArchivo}"`).send(file.pdf);
+  });
+
+  app.post('/:id/visacion/enviar', { preHandler: [app.authenticate, requirePermission('creditos:create')] }, async (request) => {
+    const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    const body = z.object({
+      para: z.string().trim().email(),
+      copia: z.string().trim().email().nullish().or(z.literal('')),
+      mensaje: z.string().max(2000).nullish(),
+      extras: extrasVisacionSchema
+    }).parse(request.body);
+    const user = request.user as JwtUserPayload | undefined;
+    return enviarCartaVisacion(params.id, { ...body, usuarioId: user?.sub ? Number(user.sub) : null });
+  });
+
+  app.get('/visaciones/:id/pdf', { preHandler: [app.authenticate, requirePermission('creditos:read')] }, async (request, reply) => {
+    const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    const file = await getVisacionPdf(params.id);
+    return reply.header('Content-Type', 'application/pdf').header('Content-Disposition', `inline; filename="${file.nombre_archivo}"`).send(file.contenido_pdf);
+  });
+
+  app.get('/:id/documentos-adicionales', { preHandler: [app.authenticate, requirePermission('creditos:read')] }, async (request) => {
+    const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    return listDocumentosAdicionales(params.id);
+  });
+
+  app.post('/:id/documentos-adicionales', { preHandler: [app.authenticate, requirePermission('creditos:create')] }, async (request) => {
+    const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    const file = await request.file();
+    if (!file) throw new Error('Debes seleccionar un archivo');
+    const descripcion = (file.fields.descripcion as { value?: string } | undefined)?.value ?? '';
+    const user = request.user as JwtUserPayload | undefined;
+    return subirDocumentoAdicional(params.id, {
+      descripcion: String(descripcion),
+      fileName: file.filename,
+      mimeType: file.mimetype,
+      content: await file.toBuffer(),
+      usuarioId: user?.sub ? Number(user.sub) : null
+    });
+  });
+
+  app.get('/documentos-adicionales/:id/archivo', { preHandler: [app.authenticate, requirePermission('creditos:read')] }, async (request, reply) => {
+    const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    const file = await getDocumentoAdicionalArchivo(params.id);
+    return reply
+      .header('Content-Type', file.mime_type)
+      .header('Content-Disposition', `inline; filename="${encodeURIComponent(file.nombre_archivo)}"`)
+      .send(file.contenido);
+  });
+
+  app.get('/:id/soportes-cliente', { preHandler: [app.authenticate, requirePermission('creditos:read')] }, async (request) => {
+    const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    return listSoportesCliente(params.id);
+  });
+
+  app.get('/soportes-cliente/:id/archivo', { preHandler: [app.authenticate, requirePermission('creditos:read')] }, async (request, reply) => {
+    const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    const file = await getSoporteClienteArchivo(params.id);
+    return reply
+      .header('Content-Type', file.mime_type)
+      .header('Content-Disposition', `inline; filename="${encodeURIComponent(file.nombre_archivo)}"`)
+      .send(file.contenido);
+  });
+
+  app.patch('/soportes-cliente/:id', { preHandler: [app.authenticate, requirePermission('creditos:create')] }, async (request) => {
+    const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    const body = z.object({ estado: z.enum(['APROBADO', 'RECHAZADO']), observacion: z.string().max(1000).nullish() }).parse(request.body);
+    const user = request.user as JwtUserPayload | undefined;
+    return revisarSoporteCliente(params.id, { ...body, usuarioId: user?.sub ? Number(user.sub) : null });
   });
 }
 
