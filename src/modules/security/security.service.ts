@@ -728,7 +728,7 @@ export async function listPermissions() {
 export async function listIdentificationTypes() {
   return withClient(async (client) => {
     const result = await client.query<IdentificationTypeRow>(
-      'select id_tip_identificacion, v_des_identificacion, v_sigla_identificacion, v_cod_dane from "Creditos"."TBL_TIP_IDENTIFICACIONES" order by v_sigla_identificacion'
+      'select id_tip_identificacion, v_des_identificacion, v_sigla_identificacion, v_cod_dane from "Creditos"."TBL_TIP_IDENTIFICACIONES" where activo order by v_sigla_identificacion'
     );
 
     return result.rows.map((type) => ({

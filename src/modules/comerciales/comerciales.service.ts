@@ -342,11 +342,11 @@ export async function listComercialesCatalogs() {
     await ensureAsesoresTables(client);
     const [bancos, tiposCuenta, rolesVendedor, formulas, libranzeras, generos, financieras] = await Promise.all([
       client.query<CatalogRow>('select id_banco as id, des_banco as nombre from "Creditos"."TBL_BANCOS" order by des_banco'),
-      client.query<CatalogRow>('select id_tipo_cuenta as id, des_tipo_cuenta as nombre from "Creditos"."TBL_TIPO_CUENTAS" order by des_tipo_cuenta'),
-      client.query<CatalogRow>('select id_rol_vendedor as id, des_rol_vendedor as nombre from "Creditos"."TBL_ROLES_VENDEDOR" order by des_rol_vendedor'),
+      client.query<CatalogRow>('select id_tipo_cuenta as id, des_tipo_cuenta as nombre from "Creditos"."TBL_TIPO_CUENTAS" where activo order by des_tipo_cuenta'),
+      client.query<CatalogRow>('select id_rol_vendedor as id, des_rol_vendedor as nombre from "Creditos"."TBL_ROLES_VENDEDOR" where activo order by des_rol_vendedor'),
       client.query<CatalogRow>('select id_formula_comercial as id, des_formula as nombre from "Creditos"."TBL_FORMULAS_COMERCIAL" order by des_formula'),
       client.query<CatalogRow>('select id_libranzera as id, v_razon_social as nombre from "Creditos"."TBL_LIBRANZERAS" order by v_razon_social'),
-      client.query<TextCatalogRow>('select cod_genero as id, des_genero as nombre from "Creditos"."TBL_GENEROS" order by des_genero'),
+      client.query<TextCatalogRow>('select cod_genero as id, des_genero as nombre from "Creditos"."TBL_GENEROS" where activo order by des_genero'),
       client.query<CatalogRow>('select id_financiera as id, coalesce(v_sigla || \' - \' || v_razon_social, v_razon_social) as nombre from "Creditos"."TBL_FINANCIERA" where ind_activo = true order by v_razon_social')
     ]);
 
