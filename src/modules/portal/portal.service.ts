@@ -6,6 +6,17 @@ import { pool } from '../../lib/db.js';
 import { createCredito, simularCredito } from '../creditos/creditos.service.js';
 import { SecurityError } from '../security/security.service.js';
 import { iniciarVerificacionJumio } from '../jumio/jumio.service.js';
+import {
+  decodeArchivo,
+  guardarModalidadCredito,
+  listSoportesCliente,
+  subirSoporteCliente,
+  validarModalidad,
+  type ArchivoBase64,
+  type CompraCarteraInput,
+  type ModalidadDesembolso,
+  type TipoSoporte
+} from '../creditos/soportes-cliente.js';
 
 export interface PortalRegisterInput {
   identificacion: string;
@@ -634,7 +645,13 @@ export async function simularPortalCredito(clienteId: number, input: PortalSimul
   return simularCredito(input);
 }
 
-export async function crearSolicitudPortalCredito(clienteId: number, input: PortalSimularCreditoInput) {
+export async function crearSolicitudPortalCredito(
+  clienteId: number,
+  input: PortalSimularCreditoInput & { modalidad: ModalidadDesembolso; comprasCartera: CompraCarteraInput[] }
+) {
+  // Validate mode and files before creating the credit so a bad upload never leaves a half-created request.
+  validarModalidad(input.modalidad, input.montoSolicitado, input.comprasCartera);
+  input.comprasCartera.forEach((item) => decodeArchivo(item.archivo));
   const cliente = await getPortalClientById(clienteId);
   const comercial = nullableText(input.codigoVendedor)
     ? await findComercialByCode(input.codigoVendedor!)
@@ -652,6 +669,8 @@ export async function crearSolicitudPortalCredito(clienteId: number, input: Port
     plazo: input.plazo
   });
 
+  await guardarModalidadCredito(nuevoCredito.id, input.modalidad, input.montoSolicitado, input.comprasCartera);
+
   // Automatically initialize Jumio verification session for the new credit
   let jumioData = null;
   try {
@@ -664,6 +683,33 @@ export async function crearSolicitudPortalCredito(clienteId: number, input: Port
     ...nuevoCredito,
     jumio: jumioData
   };
+}
+
+/** Credits belong to a portal client through the identification number (same rule as listPortalCreditos). */
+export async function assertCreditoDelCliente(clienteId: number, creditoId: number) {
+  const cliente = await getPortalClientById(clienteId);
+  const result = await pool.query(
+    'select 1 from "Creditos"."TBL_CREDITOS" where id_credito = $1 and v_identificacion_cliente = $2',
+    [creditoId, cliente.identificacion]
+  );
+  if (!result.rowCount) throw new SecurityError('Solicitud no encontrada', 404);
+}
+
+export async function listSoportesPortal(clienteId: number, creditoId: number) {
+  await assertCreditoDelCliente(clienteId, creditoId);
+  const data = await listSoportesCliente(creditoId);
+  // The client does not need to know which analyst reviewed each file.
+  return { ...data, soportes: data.soportes.map(({ revisadoPor: _revisadoPor, ...item }) => item) };
+}
+
+export async function subirSoportePortal(
+  clienteId: number,
+  creditoId: number,
+  input: { tipo: TipoSoporte; idCompraCartera?: number | null; archivo: ArchivoBase64 }
+) {
+  await assertCreditoDelCliente(clienteId, creditoId);
+  await subirSoporteCliente(creditoId, input);
+  return listSoportesPortal(clienteId, creditoId);
 }
 
 async function findComercialByCode(codigo: string) {

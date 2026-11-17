@@ -5,6 +5,8 @@ import {
   confirmPortalEmail,
   completePortalLaborProfile,
   crearSolicitudPortalCredito,
+  listSoportesPortal,
+  subirSoportePortal,
   getPortalClientById,
   listPortalCatalogs,
   listPortalCreditos,
@@ -69,6 +71,20 @@ const creditoPortalSchema = z.object({
   montoSolicitado: z.coerce.number().positive(),
   plazo: z.coerce.number().int().positive(),
   codigoVendedor: z.string().trim().nullable().optional()
+});
+
+const solicitudPortalSchema = creditoPortalSchema.extend({
+  modalidad: z.enum(['EFECTIVO', 'COMPRA_CARTERA', 'MIXTO']).default('EFECTIVO'),
+  comprasCartera: z
+    .array(
+      z.object({
+        entidad: z.string().trim().min(2).max(160),
+        valor: z.coerce.number().positive(),
+        archivo: z.object({ nombre: z.string().min(1).max(240), mimeType: z.string().min(3).max(120), base64: z.string().min(10) })
+      })
+    )
+    .max(5)
+    .default([])
 });
 
 const simulacionPublicaSchema = z.object({
@@ -157,6 +173,23 @@ export async function portalRoutes(app: FastifyInstance) {
     return listPortalCreditos(user.clienteId);
   });
 
+  app.get('/creditos/:id/soportes', { preHandler: [authenticatePortal] }, async (request) => {
+    const user = request.user as unknown as PortalJwtPayload;
+    const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    return listSoportesPortal(user.clienteId, params.id);
+  });
+
+  app.post('/creditos/:id/soportes', { preHandler: [authenticatePortal] }, async (request) => {
+    const user = request.user as unknown as PortalJwtPayload;
+    const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    const body = z.object({
+      tipo: z.enum(['CEDULA_FRENTE', 'CEDULA_REVERSO', 'FOTO_ROSTRO', 'CERTIFICADO_COMPRA_CARTERA']),
+      idCompraCartera: z.coerce.number().int().positive().nullish(),
+      archivo: z.object({ nombre: z.string().min(1).max(240), mimeType: z.string().min(3).max(120), base64: z.string().min(10) })
+    }).parse(request.body);
+    return subirSoportePortal(user.clienteId, params.id, body);
+  });
+
   app.post('/simular', { preHandler: [authenticatePortal] }, async (request) => {
     const user = request.user as unknown as PortalJwtPayload;
     const cliente = await getPortalClientById(user.clienteId);
@@ -169,7 +202,7 @@ export async function portalRoutes(app: FastifyInstance) {
     const user = request.user as unknown as PortalJwtPayload;
     const cliente = await getPortalClientById(user.clienteId);
     if (!cliente.perfilCompleto) return replyProfileRequired();
-    const body = creditoPortalSchema.parse(request.body);
+    const body = solicitudPortalSchema.parse(request.body);
     return crearSolicitudPortalCredito(user.clienteId, body);
   });
 }

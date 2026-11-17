@@ -1,4 +1,10 @@
 import { calcularProducto, type AtributoCalculo } from './calculo-producto.js';
+import { hasEstudioCredito } from './estudio-credito.js';
+import { countSoportesClientePendientes } from './soportes-cliente.js';
+import { ensureEgresosSchema, formatNumeroEgreso } from './egresos.js';
+import { notificarRechazoCliente } from './notificaciones-cliente.js';
+import { assertAprobacionEmpresa } from './visacion.js';
+import { assertPermisoEtapa } from './permisos-etapa.js';
 import crypto from 'node:crypto';
 import type { ClientLike } from '../../lib/db.js';
 import { pool } from '../../lib/db.js';
@@ -193,6 +199,9 @@ interface DesembolsoCreditoRow {
   fecha_orden: string | null;
   fecha_ejecucion: string | null;
   comprobante_pago: string | null;
+  numero_egreso?: string | null;
+  medio_pago?: string | null;
+  fecha_consignacion?: string | null;
   observacion: string | null;
   usuario: string | null;
   fec_creacion: Date;
@@ -351,6 +360,8 @@ export interface UpdateCreditoEtapaInput {
   estado: 'EN_PROCESO' | 'APROBADA' | 'DEVUELTA' | 'RECHAZADA';
   observacion?: string | null;
   usuarioId?: number | null;
+  /** Caller's permissions; when given, the stage permission (creditos:etapa-*) is enforced. */
+  permisos?: string[];
 }
 
 export interface DecideCreditoInput {
@@ -381,6 +392,8 @@ export interface RegistrarDesembolsoInput {
   referenciaPago?: string | null;
   numeroOrden?: string | null;
   comprobantePago?: string | null;
+  idCuentaEgreso?: number | null;
+  fechaConsignacion?: string | null;
   observacion?: string | null;
   usuarioId?: number | null;
 }
@@ -616,14 +629,27 @@ function normalizeKey(value: string) {
   return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
 }
 
-function isDocumentationStage(value: string) {
+// "Validación documental": reviews what the client uploaded in the portal (identity, purchase certificates).
+function isClientDocsStage(value: string) {
   const key = normalizeKey(value);
-  return key.includes('DOCUMENT') || key.includes('SOPORTE') || key.includes('FIRMA');
+  return key.includes('VALIDACION') && key.includes('DOCUMENT');
+}
+
+function isStudyStage(value: string) {
+  const key = normalizeKey(value);
+  return key.includes('ESTUDIO') || key.includes('ANALISIS');
 }
 
 function isApprovalStage(value: string) {
   const key = normalizeKey(value);
-  return key.includes('APROB') || key.includes('COMITE') || key.includes('ANALISIS') || key.includes('ESTUDIO');
+  return key.includes('APROB') || key.includes('COMITE') || key.includes('VISACION');
+}
+
+// Signing documents (contract, authorization, promissory note, insurance) are required from the approval stage on.
+function isDocumentationStage(value: string) {
+  const key = normalizeKey(value);
+  if (isClientDocsStage(value)) return false;
+  return key.includes('DOCUMENT') || key.includes('SOPORTE') || key.includes('FIRMA') || isApprovalStage(value);
 }
 
 function isSignatureStage(value: string) {
@@ -938,6 +964,8 @@ async function ensureCreditoDesembolsosTable(client: ClientLike) {
   `);
 }
 
+export const ensureEgresos = () => ensureEgresosSchema(() => withClient((client) => ensureCreditoDesembolsosTable(client)));
+
 async function ensureCreditoCuotasTable(client: ClientLike) {
   await client.query(`
     create table if not exists "Creditos"."TBL_CREDITO_CUOTAS" (
@@ -1091,7 +1119,7 @@ function diffDays(start: Date, end: Date) {
   return Math.max(0, Math.floor((endUtc - startUtc) / 86400000));
 }
 
-async function recalcularMoraCredito(client: ClientLike, creditoId: number) {
+export async function recalcularMoraCredito(client: ClientLike, creditoId: number) {
   await ensureCreditoCuotasTable(client);
   await ensureCalendarioParamColumns(client);
 
@@ -2064,6 +2092,9 @@ export async function getCreditoExpediente(creditoId: number) {
         fechaOrden: row.fecha_orden,
         fechaEjecucion: row.fecha_ejecucion,
         comprobantePago: row.comprobante_pago,
+        numeroEgreso: row.numero_egreso ?? null,
+        medioPago: row.medio_pago ?? null,
+        fechaConsignacion: row.fecha_consignacion ?? null,
         observacion: row.observacion,
         usuario: row.usuario,
         fechaRegistro: row.fec_creacion
@@ -2201,9 +2232,17 @@ export async function updateCreditoEtapa(etapaId: number, input: UpdateCreditoEt
       if (!etapaResult.rowCount) throw new SecurityError('Etapa de credito no encontrada', 404);
 
       const etapa = etapaResult.rows[0];
+      if (input.permisos) assertPermisoEtapa(input.permisos, etapa.etapa);
       const previousState = etapa.estado_etapa;
       const nextState = input.estado;
+      if (previousState === 'APROBADA' || previousState === 'RECHAZADA') {
+        throw new SecurityError(`La etapa ${etapa.etapa} ya esta ${previousState.toLowerCase()} y no se puede modificar`, 409);
+      }
       const finishDate = ['APROBADA', 'DEVUELTA', 'RECHAZADA'].includes(nextState) ? 'now()' : 'null';
+      const avisaCliente = nextState === 'DEVUELTA' || nextState === 'RECHAZADA';
+      if (avisaCliente && !input.observacion?.trim()) {
+        throw new SecurityError('Escribe el motivo en la observacion: se le envia al cliente por correo', 400);
+      }
 
       if (nextState === 'APROBADA') {
         const previousPending = await client.query<{ total: string }>(
@@ -2214,6 +2253,14 @@ export async function updateCreditoEtapa(etapaId: number, input: UpdateCreditoEt
         );
         if (Number(previousPending.rows[0]?.total ?? 0) > 0) {
           throw new SecurityError('Primero debes aprobar las etapas anteriores del credito', 400);
+        }
+
+        if (isClientDocsStage(etapa.etapa) && (await countSoportesClientePendientes(client, etapa.id_credito)) > 0) {
+          throw new SecurityError('No puedes aprobar la validacion documental: hay documentos del cliente pendientes o rechazados', 400);
+        }
+
+        if (isStudyStage(etapa.etapa) && !(await hasEstudioCredito(client, etapa.id_credito))) {
+          throw new SecurityError('Antes de aprobar el estudio de credito debes guardar el calculo de capacidad de pago', 400);
         }
 
         if (isDocumentationStage(etapa.etapa)) {
@@ -2246,6 +2293,7 @@ export async function updateCreditoEtapa(etapaId: number, input: UpdateCreditoEt
           if (!decision.rowCount || decision.rows[0].decision !== 'APROBADO') {
             throw new SecurityError('Antes de aprobar esta etapa debes registrar una decision aprobada del credito', 400);
           }
+          await assertAprobacionEmpresa(etapa.id_credito, 'aprobar la Visación');
         }
 
         if (isSignatureStage(etapa.etapa)) {
@@ -2344,6 +2392,15 @@ export async function updateCreditoEtapa(etapaId: number, input: UpdateCreditoEt
       }
 
       await client.query('commit');
+      if (avisaCliente) {
+        await notificarRechazoCliente({
+          creditoId: etapa.id_credito,
+          que: `la etapa ${isApprovalStage(etapa.etapa) ? 'Visación' : etapa.etapa}`,
+          resultado: nextState === 'DEVUELTA' ? 'DEVUELTO' : 'RECHAZADO',
+          motivo: input.observacion!.trim(),
+          usuarioId: input.usuarioId
+        });
+      }
       return getCreditoExpediente(etapa.id_credito);
     } catch (error) {
       await client.query('rollback');
@@ -2449,189 +2506,195 @@ export async function asignarFondeoCredito(creditoId: number, input: AsignarFond
   });
 }
 
+/** Same as registrarPagoCredito but runs inside the caller's transaction (used by batch payroll collection). */
+export async function aplicarPagoCreditoTx(client: ClientLike, creditoId: number, input: RegistrarPagoInput) {
+  await ensureCreditoHistorialTable(client);
+  await ensureCreditoCuotasTable(client);
+  await ensureCreditoPagosTable(client);
+  await ensureCreditoPagoAplicacionesTable(client);
+  await ensureCreditoMovimientosContablesTable(client);
+
+  const credito = await client.query<CreditoRow>(`${creditoSelect} where c.id_credito = $1 for update of c`, [creditoId]);
+  if (!credito.rowCount) throw new SecurityError('Solicitud de credito no encontrada', 404);
+  if (!Number.isFinite(input.valorPago) || input.valorPago <= 0) {
+    throw new SecurityError('El valor del pago debe ser mayor a cero', 400);
+  }
+  if (!input.fechaPago) throw new SecurityError('La fecha del pago es obligatoria', 400);
+
+  await recalcularMoraCredito(client, creditoId);
+
+  const cuotas = await client.query<CreditoCuotaRow>(
+    `select *
+     from "Creditos"."TBL_CREDITO_CUOTAS"
+     where id_credito = $1 and estado <> 'PAGADA'
+     order by numero_cuota
+     for update`,
+    [creditoId]
+  );
+  if (!cuotas.rowCount) {
+    throw new SecurityError('Este credito no tiene cuotas pendientes para aplicar pagos', 400);
+  }
+
+  const pagoCreado = await client.query<{ id_credito_pago: number }>(
+    `insert into "Creditos"."TBL_CREDITO_PAGOS" (
+      id_credito, fecha_pago, valor_pago, medio_pago, referencia_pago, tipo_recaudo, periodo_nomina, observacion, id_usuario
+    ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+    returning id_credito_pago`,
+    [
+      creditoId,
+      input.fechaPago,
+      roundMoney(input.valorPago),
+      input.medioPago?.trim() || null,
+      input.referenciaPago?.trim() || null,
+      input.tipoRecaudo?.trim() || (input.medioPago?.trim() === 'NOMINA' ? 'NOMINA' : 'MANUAL'),
+      input.periodoNomina?.trim() || null,
+      input.observacion?.trim() || null,
+      input.usuarioId ?? null
+    ]
+  );
+
+  let restante = roundMoney(input.valorPago);
+  for (const cuota of cuotas.rows) {
+    if (restante <= 0) break;
+
+    const saldoCuota = Math.max(0, roundMoney(Number(cuota.valor_cuota) + Number(cuota.valor_mora) - Number(cuota.valor_pagado)));
+    if (saldoCuota <= 0) continue;
+
+    const aplicado = Math.min(restante, saldoCuota);
+    const nuevoPagado = roundMoney(Number(cuota.valor_pagado) + aplicado);
+    const nuevoEstado = nuevoPagado >= roundMoney(Number(cuota.valor_cuota) + Number(cuota.valor_mora)) ? 'PAGADA' : cuota.estado;
+
+    const moraPendiente = Math.max(0, Number(cuota.valor_mora) - Number(cuota.mora_pagada));
+    const capitalPendiente = Math.max(0, Number(cuota.capital) - Number(cuota.capital_pagado));
+    const interesPendiente = Math.max(0, Number(cuota.interes) - Number(cuota.interes_pagado));
+    const cargosPendientes = Math.max(0, Number(cuota.cargos) - Number(cuota.cargos_pagados));
+    let porAplicar = aplicado;
+    const moraAplicada = Math.min(porAplicar, moraPendiente);
+    porAplicar = roundMoney(porAplicar - moraAplicada);
+    const cargosAplicados = Math.min(porAplicar, cargosPendientes);
+    porAplicar = roundMoney(porAplicar - cargosAplicados);
+    const interesAplicado = Math.min(porAplicar, interesPendiente);
+    porAplicar = roundMoney(porAplicar - interesAplicado);
+    const capitalAplicado = Math.min(porAplicar, capitalPendiente);
+
+    await client.query(
+      `update "Creditos"."TBL_CREDITO_CUOTAS"
+       set mora_pagada = mora_pagada + $2,
+           cargos_pagados = cargos_pagados + $3,
+           interes_pagado = interes_pagado + $4,
+           capital_pagado = capital_pagado + $5,
+           valor_pagado = $6,
+           fecha_ultimo_pago = $7,
+           estado = $8
+       where id_credito_cuota = $1`,
+      [
+        cuota.id_credito_cuota,
+        roundMoney(moraAplicada),
+        roundMoney(cargosAplicados),
+        roundMoney(interesAplicado),
+        roundMoney(capitalAplicado),
+        nuevoPagado,
+        input.fechaPago,
+        nuevoEstado
+      ]
+    );
+
+    await client.query(
+      `insert into "Creditos"."TBL_CREDITO_PAGO_APLICACIONES" (
+        id_credito_pago, id_credito_cuota, valor_aplicado, mora_aplicada, cargos_aplicados, interes_aplicado, capital_aplicado
+      ) values ($1,$2,$3,$4,$5,$6,$7)`,
+      [
+        pagoCreado.rows[0].id_credito_pago,
+        cuota.id_credito_cuota,
+        roundMoney(aplicado),
+        roundMoney(moraAplicada),
+        roundMoney(cargosAplicados),
+        roundMoney(interesAplicado),
+        roundMoney(capitalAplicado)
+      ]
+    );
+
+    restante = roundMoney(restante - aplicado);
+  }
+
+  if (restante > 0) {
+    await client.query(
+      `update "Creditos"."TBL_CREDITO_PAGOS"
+       set saldo_favor = $2
+       where id_credito_pago = $1`,
+      [pagoCreado.rows[0].id_credito_pago, restante]
+    );
+  }
+
+  const saldoPendiente = await client.query<{ saldo: string }>(
+    `select coalesce(sum(valor_cuota + valor_mora - valor_pagado), 0)::numeric as saldo
+     from "Creditos"."TBL_CREDITO_CUOTAS"
+     where id_credito = $1`,
+    [creditoId]
+  );
+
+  await client.query(
+    `update "Creditos"."TBL_CREDITOS"
+     set v_valor_pendiente = $2,
+         v_estado_solicitud = case when $2::numeric <= 0 then 'PAGADO' else v_estado_solicitud end,
+         fec_actualizacion = now()
+     where id_credito = $1`,
+    [creditoId, roundMoney(Number(saldoPendiente.rows[0]?.saldo ?? 0))]
+  );
+
+  const valorAplicado = roundMoney(input.valorPago - restante);
+  if (valorAplicado > 0) {
+    await registrarMovimientoContable(client, {
+      creditoId,
+      fecha: input.fechaPago,
+      tipo: 'RECAUDO',
+      concepto: 'Recaudo aplicado a cartera',
+      credito: valorAplicado,
+      recaudoAplicado: valorAplicado,
+      referenciaTipo: 'PAGO',
+      referenciaId: pagoCreado.rows[0].id_credito_pago,
+      observacion: input.referenciaPago?.trim() || input.observacion?.trim() || null,
+      usuarioId: input.usuarioId
+    });
+
+    // PASO 9 ARQUITECTURA: Financiera -> Contabilidad (Aplica pago a capital, intereses, seguros y cargos)
+    try {
+      await contabilidadService.registrarRecaudoContable({
+        creditoId,
+        consecutivo: credito.rows[0].consecutivo || `CR-${creditoId}`,
+        referenciaPago: input.referenciaPago?.trim() || `PG-${pagoCreado.rows[0].id_credito_pago}`,
+        totalRecaudado: valorAplicado,
+        capitalAplicado: roundMoney(valorAplicado * 0.70), // Estimación o desglose directo
+        interesAplicado: roundMoney(valorAplicado * 0.25),
+        seguroAplicado: roundMoney(valorAplicado * 0.05),
+        fechaPago: input.fechaPago,
+        observacion: input.observacion?.trim() || `Recaudo nómina aplicado`
+      });
+    } catch (contabErr: any) {
+      console.warn('⚠️ [Contabilidad] Registro de recaudo en NexusERP diferido:', contabErr.message);
+    }
+  }
+
+  await addCreditoHistory(
+    client,
+    creditoId,
+    null,
+    'PAGO_REGISTRADO',
+    credito.rows[0].estado,
+    restante > 0 ? 'PAGO_CON_SALDO_A_FAVOR' : 'PAGO_APLICADO',
+    `${roundMoney(input.valorPago)} aplicado a cartera por ${input.tipoRecaudo?.trim() || (input.medioPago?.trim() === 'NOMINA' ? 'NOMINA' : 'MANUAL')}${input.periodoNomina?.trim() ? ' periodo ' + input.periodoNomina.trim() : ''}${restante > 0 ? `; saldo sin aplicar ${restante}` : ''}`,
+    input.usuarioId
+  );
+
+  return { pagoId: pagoCreado.rows[0].id_credito_pago, valorAplicado, saldoFavor: restante };
+}
+
 export async function registrarPagoCredito(creditoId: number, input: RegistrarPagoInput) {
   return withClient(async (client) => {
     await client.query('begin');
 
     try {
-      await ensureCreditoHistorialTable(client);
-      await ensureCreditoCuotasTable(client);
-      await ensureCreditoPagosTable(client);
-      await ensureCreditoPagoAplicacionesTable(client);
-      await ensureCreditoMovimientosContablesTable(client);
-
-      const credito = await client.query<CreditoRow>(`${creditoSelect} where c.id_credito = $1 for update of c`, [creditoId]);
-      if (!credito.rowCount) throw new SecurityError('Solicitud de credito no encontrada', 404);
-      if (!Number.isFinite(input.valorPago) || input.valorPago <= 0) {
-        throw new SecurityError('El valor del pago debe ser mayor a cero', 400);
-      }
-      if (!input.fechaPago) throw new SecurityError('La fecha del pago es obligatoria', 400);
-
-      await recalcularMoraCredito(client, creditoId);
-
-      const cuotas = await client.query<CreditoCuotaRow>(
-        `select *
-         from "Creditos"."TBL_CREDITO_CUOTAS"
-         where id_credito = $1 and estado <> 'PAGADA'
-         order by numero_cuota
-         for update`,
-        [creditoId]
-      );
-      if (!cuotas.rowCount) {
-        throw new SecurityError('Este credito no tiene cuotas pendientes para aplicar pagos', 400);
-      }
-
-      const pagoCreado = await client.query<{ id_credito_pago: number }>(
-        `insert into "Creditos"."TBL_CREDITO_PAGOS" (
-          id_credito, fecha_pago, valor_pago, medio_pago, referencia_pago, tipo_recaudo, periodo_nomina, observacion, id_usuario
-        ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-        returning id_credito_pago`,
-        [
-          creditoId,
-          input.fechaPago,
-          roundMoney(input.valorPago),
-          input.medioPago?.trim() || null,
-          input.referenciaPago?.trim() || null,
-          input.tipoRecaudo?.trim() || (input.medioPago?.trim() === 'NOMINA' ? 'NOMINA' : 'MANUAL'),
-          input.periodoNomina?.trim() || null,
-          input.observacion?.trim() || null,
-          input.usuarioId ?? null
-        ]
-      );
-
-      let restante = roundMoney(input.valorPago);
-      for (const cuota of cuotas.rows) {
-        if (restante <= 0) break;
-
-        const saldoCuota = Math.max(0, roundMoney(Number(cuota.valor_cuota) + Number(cuota.valor_mora) - Number(cuota.valor_pagado)));
-        if (saldoCuota <= 0) continue;
-
-        const aplicado = Math.min(restante, saldoCuota);
-        const nuevoPagado = roundMoney(Number(cuota.valor_pagado) + aplicado);
-        const nuevoEstado = nuevoPagado >= roundMoney(Number(cuota.valor_cuota) + Number(cuota.valor_mora)) ? 'PAGADA' : cuota.estado;
-
-        const moraPendiente = Math.max(0, Number(cuota.valor_mora) - Number(cuota.mora_pagada));
-        const capitalPendiente = Math.max(0, Number(cuota.capital) - Number(cuota.capital_pagado));
-        const interesPendiente = Math.max(0, Number(cuota.interes) - Number(cuota.interes_pagado));
-        const cargosPendientes = Math.max(0, Number(cuota.cargos) - Number(cuota.cargos_pagados));
-        let porAplicar = aplicado;
-        const moraAplicada = Math.min(porAplicar, moraPendiente);
-        porAplicar = roundMoney(porAplicar - moraAplicada);
-        const cargosAplicados = Math.min(porAplicar, cargosPendientes);
-        porAplicar = roundMoney(porAplicar - cargosAplicados);
-        const interesAplicado = Math.min(porAplicar, interesPendiente);
-        porAplicar = roundMoney(porAplicar - interesAplicado);
-        const capitalAplicado = Math.min(porAplicar, capitalPendiente);
-
-        await client.query(
-          `update "Creditos"."TBL_CREDITO_CUOTAS"
-           set mora_pagada = mora_pagada + $2,
-               cargos_pagados = cargos_pagados + $3,
-               interes_pagado = interes_pagado + $4,
-               capital_pagado = capital_pagado + $5,
-               valor_pagado = $6,
-               fecha_ultimo_pago = $7,
-               estado = $8
-           where id_credito_cuota = $1`,
-          [
-            cuota.id_credito_cuota,
-            roundMoney(moraAplicada),
-            roundMoney(cargosAplicados),
-            roundMoney(interesAplicado),
-            roundMoney(capitalAplicado),
-            nuevoPagado,
-            input.fechaPago,
-            nuevoEstado
-          ]
-        );
-
-        await client.query(
-          `insert into "Creditos"."TBL_CREDITO_PAGO_APLICACIONES" (
-            id_credito_pago, id_credito_cuota, valor_aplicado, mora_aplicada, cargos_aplicados, interes_aplicado, capital_aplicado
-          ) values ($1,$2,$3,$4,$5,$6,$7)`,
-          [
-            pagoCreado.rows[0].id_credito_pago,
-            cuota.id_credito_cuota,
-            roundMoney(aplicado),
-            roundMoney(moraAplicada),
-            roundMoney(cargosAplicados),
-            roundMoney(interesAplicado),
-            roundMoney(capitalAplicado)
-          ]
-        );
-
-        restante = roundMoney(restante - aplicado);
-      }
-
-      if (restante > 0) {
-        await client.query(
-          `update "Creditos"."TBL_CREDITO_PAGOS"
-           set saldo_favor = $2
-           where id_credito_pago = $1`,
-          [pagoCreado.rows[0].id_credito_pago, restante]
-        );
-      }
-
-      const saldoPendiente = await client.query<{ saldo: string }>(
-        `select coalesce(sum(valor_cuota + valor_mora - valor_pagado), 0)::numeric as saldo
-         from "Creditos"."TBL_CREDITO_CUOTAS"
-         where id_credito = $1`,
-        [creditoId]
-      );
-
-      await client.query(
-        `update "Creditos"."TBL_CREDITOS"
-         set v_valor_pendiente = $2,
-             v_estado_solicitud = case when $2::numeric <= 0 then 'PAGADO' else v_estado_solicitud end,
-             fec_actualizacion = now()
-         where id_credito = $1`,
-        [creditoId, roundMoney(Number(saldoPendiente.rows[0]?.saldo ?? 0))]
-      );
-
-      const valorAplicado = roundMoney(input.valorPago - restante);
-      if (valorAplicado > 0) {
-        await registrarMovimientoContable(client, {
-          creditoId,
-          fecha: input.fechaPago,
-          tipo: 'RECAUDO',
-          concepto: 'Recaudo aplicado a cartera',
-          credito: valorAplicado,
-          recaudoAplicado: valorAplicado,
-          referenciaTipo: 'PAGO',
-          referenciaId: pagoCreado.rows[0].id_credito_pago,
-          observacion: input.referenciaPago?.trim() || input.observacion?.trim() || null,
-          usuarioId: input.usuarioId
-        });
-
-        // PASO 9 ARQUITECTURA: Financiera -> Contabilidad (Aplica pago a capital, intereses, seguros y cargos)
-        try {
-          await contabilidadService.registrarRecaudoContable({
-            creditoId,
-            consecutivo: credito.rows[0].consecutivo || `CR-${creditoId}`,
-            referenciaPago: input.referenciaPago?.trim() || `PG-${pagoCreado.rows[0].id_credito_pago}`,
-            totalRecaudado: valorAplicado,
-            capitalAplicado: roundMoney(valorAplicado * 0.70), // Estimación o desglose directo
-            interesAplicado: roundMoney(valorAplicado * 0.25),
-            seguroAplicado: roundMoney(valorAplicado * 0.05),
-            fechaPago: input.fechaPago,
-            observacion: input.observacion?.trim() || `Recaudo nómina aplicado`
-          });
-        } catch (contabErr: any) {
-          console.warn('⚠️ [Contabilidad] Registro de recaudo en NexusERP diferido:', contabErr.message);
-        }
-      }
-
-      await addCreditoHistory(
-        client,
-        creditoId,
-        null,
-        'PAGO_REGISTRADO',
-        credito.rows[0].estado,
-        restante > 0 ? 'PAGO_CON_SALDO_A_FAVOR' : 'PAGO_APLICADO',
-        `${roundMoney(input.valorPago)} aplicado a cartera por ${input.tipoRecaudo?.trim() || (input.medioPago?.trim() === 'NOMINA' ? 'NOMINA' : 'MANUAL')}${input.periodoNomina?.trim() ? ' periodo ' + input.periodoNomina.trim() : ''}${restante > 0 ? `; saldo sin aplicar ${restante}` : ''}`,
-        input.usuarioId
-      );
-
+      await aplicarPagoCreditoTx(client, creditoId, input);
       await client.query('commit');
       return getCreditoExpediente(creditoId);
     } catch (error) {
@@ -2695,69 +2758,89 @@ export async function registrarRecaudoMasivo(input: RegistrarRecaudoMasivoInput)
     resultados
   };
 }
+/** Same as reversarPagoCredito but runs inside the caller's transaction (used by batch payroll collection). */
+export async function reversarPagoCreditoTx(client: ClientLike, pagoId: number, input: ReversarPagoInput = {}) {
+  await ensureCreditoHistorialTable(client);
+  await ensureCreditoPagoAplicacionesTable(client);
+  await ensureCreditoMovimientosContablesTable(client);
+  const pago = await client.query<CreditoPagoRow & { id_credito: number }>(
+    `select p.*, coalesce(u.v_nom_completo, u.v_nom_usuario) as usuario, 0::int as soportes, null::varchar as soporte_nombre, null::varchar as soporte_mime_type
+     from "Creditos"."TBL_CREDITO_PAGOS" p
+     left join "Creditos"."TBL_USUARIOS" u on u.id_usuario = p.id_usuario
+     where p.id_credito_pago = $1
+     for update of p`,
+    [pagoId]
+  );
+  if (!pago.rowCount) throw new SecurityError('Pago no encontrado', 404);
+  if (pago.rows[0].estado_pago === 'REVERSADO') throw new SecurityError('Este pago ya fue reversado', 400);
+  const creditoId = pago.rows[0].id_credito;
+
+  const aplicaciones = await client.query<{ id_credito_pago_aplicacion: number; id_credito_cuota: number; valor_aplicado: string; mora_aplicada: string; cargos_aplicados: string; interes_aplicado: string; capital_aplicado: string }>(
+    `select * from "Creditos"."TBL_CREDITO_PAGO_APLICACIONES" where id_credito_pago = $1 and reversado = false order by id_credito_pago_aplicacion for update`,
+    [pagoId]
+  );
+  if (!aplicaciones.rowCount) throw new SecurityError('Este pago no tiene detalle de aplicacion para reverso automatico', 400);
+
+  for (const app of aplicaciones.rows) {
+    const cuota = await client.query<CreditoCuotaRow>('select * from "Creditos"."TBL_CREDITO_CUOTAS" where id_credito_cuota = $1 for update', [app.id_credito_cuota]);
+    if (!cuota.rowCount) continue;
+    const nuevoPagado = Math.max(0, roundMoney(Number(cuota.rows[0].valor_pagado) - Number(app.valor_aplicado)));
+    const nuevoEstado = nuevoPagado <= 0 ? 'PENDIENTE' : 'ABONO_PARCIAL';
+    await client.query(
+      `update "Creditos"."TBL_CREDITO_CUOTAS"
+       set mora_pagada = greatest(0, mora_pagada - $2),
+           cargos_pagados = greatest(0, cargos_pagados - $3),
+           interes_pagado = greatest(0, interes_pagado - $4),
+           capital_pagado = greatest(0, capital_pagado - $5),
+           valor_pagado = $6,
+           estado = $7
+       where id_credito_cuota = $1`,
+      [app.id_credito_cuota, Number(app.mora_aplicada), Number(app.cargos_aplicados), Number(app.interes_aplicado), Number(app.capital_aplicado), nuevoPagado, nuevoEstado]
+    );
+  }
+
+  await client.query('update "Creditos"."TBL_CREDITO_PAGO_APLICACIONES" set reversado = true where id_credito_pago = $1', [pagoId]);
+  await client.query("update \"Creditos\".\"TBL_CREDITO_PAGOS\" set estado_pago = 'REVERSADO' where id_credito_pago = $1", [pagoId]);
+  await recalcularMoraCredito(client, creditoId);
+  const saldoTrasReverso = await client.query<{ saldo: string }>(
+    `select coalesce(sum(valor_cuota + valor_mora - valor_pagado), 0)::numeric as saldo
+     from "Creditos"."TBL_CREDITO_CUOTAS"
+     where id_credito = $1`,
+    [creditoId]
+  );
+  await client.query(
+    `update "Creditos"."TBL_CREDITOS"
+     set v_valor_pendiente = $2,
+         v_estado_solicitud = case when v_estado_solicitud = 'PAGADO' and $2::numeric > 0 then 'DESEMBOLSADO' else v_estado_solicitud end,
+         fec_actualizacion = now()
+     where id_credito = $1`,
+    [creditoId, roundMoney(Number(saldoTrasReverso.rows[0]?.saldo ?? 0))]
+  );
+
+  const valorReversado = roundMoney(aplicaciones.rows.reduce((total, app) => total + Number(app.valor_aplicado), 0));
+  await registrarMovimientoContable(client, {
+    creditoId,
+    fecha: new Date().toISOString().slice(0, 10),
+    tipo: 'REVERSO_PAGO',
+    concepto: 'Reverso de pago aplicado',
+    debito: valorReversado,
+    recaudoAplicado: -valorReversado,
+    referenciaTipo: 'PAGO',
+    referenciaId: pagoId,
+    observacion: input.observacion?.trim() || 'Reverso de pago',
+    usuarioId: input.usuarioId
+  });
+
+  await addCreditoHistory(client, creditoId, null, 'PAGO_REVERSADO', 'APLICADO', 'REVERSADO', input.observacion?.trim() || `Pago ${pagoId} reversado por ${valorReversado}`, input.usuarioId);
+  return { creditoId, valorReversado };
+}
+
 export async function reversarPagoCredito(pagoId: number, input: ReversarPagoInput = {}) {
   return withClient(async (client) => {
     await client.query('begin');
 
     try {
-      await ensureCreditoHistorialTable(client);
-      await ensureCreditoPagoAplicacionesTable(client);
-      await ensureCreditoMovimientosContablesTable(client);
-      const pago = await client.query<CreditoPagoRow & { id_credito: number }>(
-        `select p.*, coalesce(u.v_nom_completo, u.v_nom_usuario) as usuario, 0::int as soportes, null::varchar as soporte_nombre, null::varchar as soporte_mime_type
-         from "Creditos"."TBL_CREDITO_PAGOS" p
-         left join "Creditos"."TBL_USUARIOS" u on u.id_usuario = p.id_usuario
-         where p.id_credito_pago = $1
-         for update of p`,
-        [pagoId]
-      );
-      if (!pago.rowCount) throw new SecurityError('Pago no encontrado', 404);
-      if (pago.rows[0].estado_pago === 'REVERSADO') throw new SecurityError('Este pago ya fue reversado', 400);
-      const creditoId = pago.rows[0].id_credito;
-
-      const aplicaciones = await client.query<{ id_credito_pago_aplicacion: number; id_credito_cuota: number; valor_aplicado: string; mora_aplicada: string; cargos_aplicados: string; interes_aplicado: string; capital_aplicado: string }>(
-        `select * from "Creditos"."TBL_CREDITO_PAGO_APLICACIONES" where id_credito_pago = $1 and reversado = false order by id_credito_pago_aplicacion for update`,
-        [pagoId]
-      );
-      if (!aplicaciones.rowCount) throw new SecurityError('Este pago no tiene detalle de aplicacion para reverso automatico', 400);
-
-      for (const app of aplicaciones.rows) {
-        const cuota = await client.query<CreditoCuotaRow>('select * from "Creditos"."TBL_CREDITO_CUOTAS" where id_credito_cuota = $1 for update', [app.id_credito_cuota]);
-        if (!cuota.rowCount) continue;
-        const nuevoPagado = Math.max(0, roundMoney(Number(cuota.rows[0].valor_pagado) - Number(app.valor_aplicado)));
-        const nuevoEstado = nuevoPagado <= 0 ? 'PENDIENTE' : 'ABONO_PARCIAL';
-        await client.query(
-          `update "Creditos"."TBL_CREDITO_CUOTAS"
-           set mora_pagada = greatest(0, mora_pagada - $2),
-               cargos_pagados = greatest(0, cargos_pagados - $3),
-               interes_pagado = greatest(0, interes_pagado - $4),
-               capital_pagado = greatest(0, capital_pagado - $5),
-               valor_pagado = $6,
-               estado = $7
-           where id_credito_cuota = $1`,
-          [app.id_credito_cuota, Number(app.mora_aplicada), Number(app.cargos_aplicados), Number(app.interes_aplicado), Number(app.capital_aplicado), nuevoPagado, nuevoEstado]
-        );
-      }
-
-      await client.query('update "Creditos"."TBL_CREDITO_PAGO_APLICACIONES" set reversado = true where id_credito_pago = $1', [pagoId]);
-      await client.query("update \"Creditos\".\"TBL_CREDITO_PAGOS\" set estado_pago = 'REVERSADO' where id_credito_pago = $1", [pagoId]);
-      await recalcularMoraCredito(client, creditoId);
-
-      const valorReversado = roundMoney(aplicaciones.rows.reduce((total, app) => total + Number(app.valor_aplicado), 0));
-      await registrarMovimientoContable(client, {
-        creditoId,
-        fecha: new Date().toISOString().slice(0, 10),
-        tipo: 'REVERSO_PAGO',
-        concepto: 'Reverso de pago aplicado',
-        debito: valorReversado,
-        recaudoAplicado: -valorReversado,
-        referenciaTipo: 'PAGO',
-        referenciaId: pagoId,
-        observacion: input.observacion?.trim() || 'Reverso de pago',
-        usuarioId: input.usuarioId
-      });
-
-      await addCreditoHistory(client, creditoId, null, 'PAGO_REVERSADO', 'APLICADO', 'REVERSADO', input.observacion?.trim() || `Pago ${pagoId} reversado por ${valorReversado}`, input.usuarioId);
+      const { creditoId } = await reversarPagoCreditoTx(client, pagoId, input);
       await client.query('commit');
       return getCreditoExpediente(creditoId);
     } catch (error) {
@@ -2876,6 +2959,7 @@ export async function registrarLiquidacionDefinitiva(creditoId: number, input: R
   });
 }
 export async function registrarDesembolso(creditoId: number, input: RegistrarDesembolsoInput) {
+  await ensureEgresos();
   return withClient(async (client) => {
     await client.query('begin');
 
@@ -2892,7 +2976,12 @@ export async function registrarDesembolso(creditoId: number, input: RegistrarDes
       if (!input.bancoDestino?.trim()) throw new SecurityError('El banco destino es obligatorio para desembolso', 400);
       if (!input.tipoCuenta?.trim()) throw new SecurityError('El tipo de cuenta destino es obligatorio para desembolso', 400);
       if (!input.numeroCuenta?.trim()) throw new SecurityError('El numero de cuenta destino es obligatorio para desembolso', 400);
-      if (!input.referenciaPago?.trim()) throw new SecurityError('La referencia o comprobante del pago es obligatoria para desembolso', 400);
+      if (!input.idCuentaEgreso) throw new SecurityError('Selecciona el medio de pago (cuenta de la empresa)', 400);
+      const cuentaEgreso = await client.query<{ banco: string; tipo_cuenta: string; numero_cuenta: string }>(
+        'select banco, tipo_cuenta, numero_cuenta from "Creditos"."TBL_CUENTAS_EGRESO" where id_cuenta_egreso = $1 and activo',
+        [input.idCuentaEgreso]
+      );
+      if (!cuentaEgreso.rowCount) throw new SecurityError('El medio de pago no existe o está inactivo', 400);
       await ensureCreditoLiquidacionesFinalesTable(client);
       const liquidacionFinal = await client.query<LiquidacionDefinitivaCreditoRow>(
         `select l.*, coalesce(u.v_nom_completo, u.v_nom_usuario) as usuario
@@ -2959,12 +3048,18 @@ export async function registrarDesembolso(creditoId: number, input: RegistrarDes
       }
 
       const numeroOrden = input.numeroOrden?.trim() || 'OD-' + credito.rows[0].consecutivo + '-' + new Date().getTime();
+      const seq = await client.query<{ n: string }>(`select nextval('"Creditos".seq_comprobante_egreso') as n`);
+      const numeroEgreso = formatNumeroEgreso(Number(seq.rows[0].n));
+      const c = cuentaEgreso.rows[0];
+      const medioPago = `${c.banco} - ${c.tipo_cuenta} ${c.numero_cuenta}`;
+      const referenciaPago = input.referenciaPago?.trim() || numeroEgreso;
       await client.query(
         `insert into "Creditos"."TBL_CREDITO_DESEMBOLSOS" (
           id_credito, valor_desembolso, fecha_desembolso, banco_destino,
           tipo_cuenta, numero_cuenta, referencia_pago, numero_orden, estado_desembolso,
-          fecha_orden, fecha_ejecucion, comprobante_pago, observacion, id_usuario
-        ) values ($1,$2,$3,$4,$5,$6,$7,$8,'EJECUTADO',current_date,$3,$9,$10,$11)`,
+          fecha_orden, fecha_ejecucion, comprobante_pago, observacion, id_usuario,
+          numero_egreso, id_cuenta_egreso, medio_pago, fecha_consignacion
+        ) values ($1,$2,$3,$4,$5,$6,$7,$8,'EJECUTADO',current_date,$3,$9,$10,$11,$12,$13,$14,$15)`,
         [
           creditoId,
           roundMoney(input.valorDesembolso),
@@ -2972,11 +3067,15 @@ export async function registrarDesembolso(creditoId: number, input: RegistrarDes
           input.bancoDestino?.trim() || null,
           input.tipoCuenta?.trim() || null,
           input.numeroCuenta?.trim() || null,
-          input.referenciaPago?.trim() || null,
+          referenciaPago,
           numeroOrden,
-          input.comprobantePago?.trim() || input.referenciaPago?.trim() || null,
+          input.comprobantePago?.trim() || numeroEgreso,
           input.observacion?.trim() || null,
-          input.usuarioId ?? null
+          input.usuarioId ?? null,
+          numeroEgreso,
+          input.idCuentaEgreso,
+          medioPago,
+          input.fechaConsignacion || input.fechaDesembolso
         ]
       );
 
@@ -3035,7 +3134,7 @@ export async function registrarDesembolso(creditoId: number, input: RegistrarDes
         'DESEMBOLSO_REGISTRADO',
         credito.rows[0].estado,
         'DESEMBOLSADO',
-        input.observacion?.trim() || `Orden ${numeroOrden} ejecutada por ${roundMoney(input.valorDesembolso)}`,
+        `Egreso ${numeroEgreso} por ${roundMoney(input.valorDesembolso)} desde ${medioPago}${input.observacion?.trim() ? ` · ${input.observacion.trim()}` : ''}`,
         input.usuarioId
       );
 

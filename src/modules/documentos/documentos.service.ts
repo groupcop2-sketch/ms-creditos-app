@@ -324,7 +324,7 @@ async function getPublishedOrLatestVersion(id: number) {
   return result.rows[0] as { codigo: string; nombre: string; idVersion: number; contenido: string };
 }
 
-async function createTextPdf(title: string, content: string) {
+export async function createTextPdf(title: string, content: string) {
   const pdf = await PDFDocument.create();
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);

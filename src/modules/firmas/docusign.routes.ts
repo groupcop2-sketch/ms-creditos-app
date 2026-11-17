@@ -2,6 +2,8 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { env } from '../../config/env.js';
 import type { JwtUserPayload } from '../../types/auth.js';
+import { assertAprobacionEmpresa } from '../creditos/visacion.js';
+import { requirePermisoEtapa } from '../creditos/permisos-etapa.js';
 import {
   crearSobreCredito,
   getCombinedSignedPdf,
@@ -100,9 +102,10 @@ export async function docusignRoutes(app: FastifyInstance) {
   // Create & Send new Envelope for a credit (Pagaré + Contrato)
   app.post(
     '/envelopes',
-    { preHandler: [app.authenticate, requirePermission('creditos:create')] },
+    { preHandler: [app.authenticate, requirePermission('creditos:create'), requirePermisoEtapa('creditos:etapa-visacion')] },
     async (request) => {
       const body = crearSobreSchema.parse(request.body);
+      await assertAprobacionEmpresa(body.creditoId, 'enviar documentos a firma del cliente');
       const user = request.user as JwtUserPayload | undefined;
       return crearSobreCredito({
         ...body,
