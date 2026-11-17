@@ -51,6 +51,9 @@ const envSchema = z.object({
   JWT_EXPIRES_IN: z.string().default('8h'),
   DATABASE_URL: z.string().optional(),
   APP_PUBLIC_URL: z.string().default('http://localhost:5173'),
+  PORTAL_PUBLIC_URL: z.string().optional(),
+  /** Comma-separated usernames that get the SUPER ADMIN role (the software vendor). */
+  SUPERADMIN_USUARIOS: z.string().optional(),
   SMTP_HOST: z.string().optional(),
   SMTP_PORT: z.coerce.number().int().positive().default(587),
   SMTP_SECURE: z.coerce.boolean().default(false),

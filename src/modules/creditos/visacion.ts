@@ -3,7 +3,7 @@ import { pool } from '../../lib/db.js';
 import { isMailConfigured, sendMail } from '../../lib/mailer.js';
 import { createTextPdf } from '../documentos/documentos.service.js';
 import { SecurityError } from '../security/security.service.js';
-import { assertEtapaAbierta } from './soportes-cliente.js';
+import { assertEtapaAbierta, decodeArchivo } from './soportes-cliente.js';
 
 export type DatosVisacion = {
   consecutivo: string;
@@ -291,4 +291,117 @@ export async function getVisacionPdf(visacionId: number) {
   );
   if (!result.rowCount) throw new SecurityError('Carta no encontrada', 404);
   return result.rows[0];
+}
+
+/* ── Aprobación de la empresa ──────────────────────────────────────────────
+ * Flow for payroll loans (libranza): letter sent to the employer → employer approves (date + who,
+ * optional signed letter) → only then the credit documents go to the client for signature. */
+
+let aprobacionTablaLista: Promise<void> | null = null;
+function ensureAprobacionEmpresaTable() {
+  aprobacionTablaLista ??= pool.query(`
+    create table if not exists "Creditos"."TBL_CREDITO_APROBACION_EMPRESA" (
+      id_aprobacion_empresa serial primary key,
+      id_credito integer not null references "Creditos"."TBL_CREDITOS"(id_credito) on delete cascade,
+      fecha_aprobacion date not null,
+      aprobado_por varchar(200) not null,
+      cargo varchar(120) null,
+      observacion text null,
+      nombre_archivo varchar(240) null,
+      mime_type varchar(120) null,
+      contenido bytea null,
+      id_usuario integer null,
+      fec_creacion timestamp without time zone not null default now()
+    )
+  `).then(() => undefined).catch((err) => { aprobacionTablaLista = null; throw err; });
+  return aprobacionTablaLista;
+}
+
+export async function requiereAprobacionEmpresa(creditoId: number) {
+  const r = await pool.query<{ tipo: string | null }>(
+    `select tc.des_tipo_credito as tipo
+     from "Creditos"."TBL_CREDITOS" c
+     inner join "Creditos"."TBL_PRODUCTOS_CREDITO" p on p.id_producto_credito = c.id_producto_credito
+     left join "Creditos"."TBL_TIPOS_CREDITO" tc on tc.id_tipo_credito = p.id_tipo_credito
+     where c.id_credito = $1`,
+    [creditoId]
+  );
+  return /libranza/i.test(r.rows[0]?.tipo ?? '');
+}
+
+export async function getAprobacionEmpresa(creditoId: number) {
+  await ensureAprobacionEmpresaTable();
+  const r = await pool.query<{
+    id_aprobacion_empresa: number; fecha_aprobacion: string; aprobado_por: string; cargo: string | null;
+    observacion: string | null; nombre_archivo: string | null; fec_creacion: string; usuario: string | null;
+  }>(
+    `select a.id_aprobacion_empresa, a.fecha_aprobacion::text, a.aprobado_por, a.cargo, a.observacion, a.nombre_archivo,
+       a.fec_creacion, coalesce(u.v_nom_completo, u.v_nom_usuario) as usuario
+     from "Creditos"."TBL_CREDITO_APROBACION_EMPRESA" a
+     left join "Creditos"."TBL_USUARIOS" u on u.id_usuario = a.id_usuario
+     where a.id_credito = $1 order by a.fec_creacion desc limit 1`,
+    [creditoId]
+  );
+  const row = r.rows[0];
+  return row ? {
+    id: row.id_aprobacion_empresa,
+    fechaAprobacion: row.fecha_aprobacion,
+    aprobadoPor: row.aprobado_por,
+    cargo: row.cargo,
+    observacion: row.observacion,
+    nombreArchivo: row.nombre_archivo,
+    fechaRegistro: row.fec_creacion,
+    usuario: row.usuario
+  } : null;
+}
+
+export async function registrarAprobacionEmpresa(
+  creditoId: number,
+  input: {
+    fechaAprobacion: string; aprobadoPor: string; cargo?: string | null; observacion?: string | null;
+    archivo?: { nombre: string; mimeType: string; base64: string } | null; usuarioId?: number | null;
+  }
+) {
+  await ensureVisacionesTable();
+  await ensureAprobacionEmpresaTable();
+  await assertEtapaAbierta(creditoId, esVisacion, 'registrar la aprobación de la empresa');
+  const hoy = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Bogota' });
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.fechaAprobacion) || input.fechaAprobacion > hoy) {
+    throw new SecurityError('La fecha de aprobación de la empresa no puede ser futura', 400);
+  }
+  const carta = await pool.query('select 1 from "Creditos"."TBL_CREDITO_VISACIONES" where id_credito = $1 limit 1', [creditoId]);
+  if (!carta.rowCount) throw new SecurityError('Primero envía la carta de visación a la empresa', 400);
+  const archivo = input.archivo ? decodeArchivo(input.archivo) : null;
+
+  await pool.query(
+    `insert into "Creditos"."TBL_CREDITO_APROBACION_EMPRESA"
+      (id_credito, fecha_aprobacion, aprobado_por, cargo, observacion, nombre_archivo, mime_type, contenido, id_usuario)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+    [creditoId, input.fechaAprobacion, input.aprobadoPor.trim(), input.cargo?.trim() || null, input.observacion?.trim() || null,
+      archivo?.nombre ?? null, archivo?.mimeType ?? null, archivo?.buffer ?? null, input.usuarioId ?? null]
+  );
+  await pool.query(
+    `insert into "Creditos"."TBL_CREDITO_HISTORIAL" (id_credito, accion, observacion, id_usuario) values ($1, 'APROBACION_EMPRESA', $2, $3)`,
+    [creditoId, `Empresa aprobó el ${input.fechaAprobacion}: ${input.aprobadoPor.trim()}${input.cargo?.trim() ? ` (${input.cargo.trim()})` : ''}`, input.usuarioId ?? null]
+  ).catch(() => undefined);
+  return getAprobacionEmpresa(creditoId);
+}
+
+export async function getAprobacionEmpresaArchivo(aprobacionId: number) {
+  await ensureAprobacionEmpresaTable();
+  const r = await pool.query<{ nombre_archivo: string | null; mime_type: string | null; contenido: Buffer | null }>(
+    'select nombre_archivo, mime_type, contenido from "Creditos"."TBL_CREDITO_APROBACION_EMPRESA" where id_aprobacion_empresa = $1',
+    [aprobacionId]
+  );
+  const row = r.rows[0];
+  if (!row?.contenido) throw new SecurityError('Soporte no encontrado', 404);
+  return { nombre: row.nombre_archivo ?? 'aprobacion-empresa', mimeType: row.mime_type ?? 'application/octet-stream', contenido: row.contenido };
+}
+
+/** Payroll loans cannot go to the client for signature (or close Visación) until the employer approved. */
+export async function assertAprobacionEmpresa(creditoId: number, accion: string) {
+  if (!(await requiereAprobacionEmpresa(creditoId))) return;
+  if (!(await getAprobacionEmpresa(creditoId))) {
+    throw new SecurityError(`Antes de ${accion} registra la aprobación de la empresa en Visación`, 409);
+  }
 }

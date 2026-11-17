@@ -1,4 +1,5 @@
 import type { ClientLike } from '../../lib/db.js';
+import { notificarRechazoCliente, TIPO_SOPORTE_LABEL } from './notificaciones-cliente.js';
 import { pool } from '../../lib/db.js';
 import { SecurityError } from '../security/security.service.js';
 
@@ -151,7 +152,7 @@ export async function guardarModalidadCredito(
   }
 }
 
-const normalizeStage = (value: string) => value.normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase();
+export const normalizeStage = (value: string) => value.normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase();
 export const esEtapaValidacionDocumental = (key: string) => key.includes('VALIDACION') && key.includes('DOCUMENT');
 export const esEtapaEstudio = (key: string) => key.includes('ESTUDIO') || key.includes('ANALISIS');
 
@@ -316,8 +317,8 @@ export async function revisarSoporteCliente(
   if (input.estado === 'RECHAZADO' && !input.observacion?.trim()) {
     throw new SecurityError('Indica el motivo del rechazo para que el cliente sepa que corregir', 400);
   }
-  const soporte = await pool.query<{ id_credito: number }>(
-    'select id_credito from "Creditos"."TBL_CREDITO_SOPORTES_CLIENTE" where id_soporte = $1',
+  const soporte = await pool.query<{ id_credito: number; tipo: string }>(
+    'select id_credito, tipo from "Creditos"."TBL_CREDITO_SOPORTES_CLIENTE" where id_soporte = $1',
     [soporteId]
   );
   if (!soporte.rowCount) throw new SecurityError('Documento no encontrado', 404);
@@ -329,5 +330,14 @@ export async function revisarSoporteCliente(
     [soporteId, input.estado, input.observacion?.trim() || null, input.usuarioId ?? null]
   );
   if (!result.rowCount) throw new SecurityError('Documento no encontrado', 404);
+  if (input.estado === 'RECHAZADO') {
+    await notificarRechazoCliente({
+      creditoId: result.rows[0].id_credito,
+      que: TIPO_SOPORTE_LABEL[soporte.rows[0].tipo] ?? 'Un documento',
+      resultado: 'RECHAZADO',
+      motivo: input.observacion!.trim(),
+      usuarioId: input.usuarioId
+    });
+  }
   return listSoportesCliente(result.rows[0].id_credito);
 }

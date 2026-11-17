@@ -26,6 +26,7 @@ import {
   updateUser
 } from './security.service.js';
 import type { JwtUserPayload } from '../../types/auth.js';
+import { assertGestionSuperAdmin, getEstadoLicencia, PERMISO_SUPERADMIN } from '../plataforma/plataforma.service.js';
 
 const loginSchema = z.object({
   username: z.string().min(1),
@@ -108,6 +109,11 @@ export async function securityRoutes(app: FastifyInstance) {
   app.post('/auth/login', async (request, reply) => {
     const body = parseBody(loginSchema, request.body);
     const user = await authenticateUser(body.username, body.password);
+    // The vendor (super admin) can always log in to renew a license.
+    const licencia = await getEstadoLicencia();
+    if (!licencia.vigente && !user.permissions.includes(PERMISO_SUPERADMIN)) {
+      return reply.code(403).send({ message: `${licencia.motivo}. Contacta al proveedor del software.` });
+    }
     const token = await reply.jwtSign({
       sub: String(user.id),
       username: user.username,
@@ -155,26 +161,33 @@ export async function securityRoutes(app: FastifyInstance) {
 
   app.get('/usuarios', { preHandler: [app.authenticate] }, async () => listUsers());
 
-  app.post('/usuarios', { preHandler: [app.authenticate, requirePermission('usuarios:create')] }, async (request) => {
+  app.post('/usuarios', { preHandler: [app.authenticate, requirePermission('usuarios:create')] }, async (request, reply) => {
     const body = parseBody(userSchema, request.body);
+    const licencia = await getEstadoLicencia();
+    if (licencia.cupoLleno) {
+      return reply.code(409).send({ message: `La licencia permite ${licencia.maxUsuarios} usuarios activos y ya hay ${licencia.usuariosActivos}.` });
+    }
     return createUser(body);
   });
 
   app.put('/usuarios/:id', { preHandler: [app.authenticate, requirePermission('usuarios:update')] }, async (request) => {
     const body = parseBody(updateUserSchema, request.body);
     const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    await assertGestionSuperAdmin((request.user as JwtUserPayload | undefined)?.permissions, { userId: params.id });
     return updateUser(params.id, body);
   });
 
   app.patch('/usuarios/:id/contrasena', { preHandler: [app.authenticate, requirePermission('usuarios:change-password')] }, async (request) => {
     const body = parseBody(passwordSchema, request.body);
     const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    await assertGestionSuperAdmin((request.user as JwtUserPayload | undefined)?.permissions, { userId: params.id });
     return changeUserPassword(params.id, body.contrasena);
   });
 
   app.put('/usuarios/:id/roles', { preHandler: [app.authenticate, requirePermission('usuarios:assign-roles')] }, async (request) => {
     const body = parseBody(roleIdsSchema, request.body);
     const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    await assertGestionSuperAdmin((request.user as JwtUserPayload | undefined)?.permissions, { userId: params.id, roleIds: body.roleIds.map(Number) });
     return replaceUserRoles(params.id, body.roleIds);
   });
 
@@ -188,6 +201,7 @@ export async function securityRoutes(app: FastifyInstance) {
   app.put('/roles/:id', { preHandler: [app.authenticate, requirePermission('roles:update')] }, async (request) => {
     const body = parseBody(roleSchema, request.body);
     const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    await assertGestionSuperAdmin((request.user as JwtUserPayload | undefined)?.permissions, { roleId: params.id });
     return updateRole(params.id, body);
   });
 
@@ -199,6 +213,7 @@ export async function securityRoutes(app: FastifyInstance) {
   app.put('/roles/:id/permisos', { preHandler: [app.authenticate, requirePermission('roles:assign-permissions')] }, async (request) => {
     const body = parseBody(permissionIdsSchema, request.body);
     const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    await assertGestionSuperAdmin((request.user as JwtUserPayload | undefined)?.permissions, { roleId: params.id, permissionIds: body.permissionIds.map(Number) });
     return replaceRolePermissions(params.id, body.permissionIds);
   });
 

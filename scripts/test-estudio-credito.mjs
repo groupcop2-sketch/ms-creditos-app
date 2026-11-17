@@ -64,3 +64,38 @@ test('carta de visacion: llena datos y marca los faltantes', () => {
   assert.match(carta, /girar dichos recursos a favor de Operadora Y/);
   assert.match(carta, /Plazo en meses: 24/);
 });
+
+import { evaluarLicencia } from '../src/modules/plataforma/plataforma.service.ts';
+import { permisoDeEtapa } from '../src/modules/creditos/permisos-etapa.ts';
+import { formatNumeroEgreso } from '../src/modules/creditos/egresos.ts';
+
+test('licencia: vigente, vencida, suspendida, sin limites y cupo de usuarios', () => {
+  const base = { licencia_estado: 'ACTIVA', licencia_vencimiento: '2026-11-30', licencia_max_usuarios: 5 };
+  const ok = evaluarLicencia(base, 3, '2026-11-17');
+  assert.equal(ok.vigente, true);
+  assert.equal(ok.diasRestantes, 13);
+  assert.equal(ok.cupoLleno, false);
+  assert.equal(evaluarLicencia(base, 5, '2026-11-30').vigente, true, 'el ultimo dia sigue vigente');
+  assert.equal(evaluarLicencia(base, 5, '2026-11-17').cupoLleno, true);
+  const vencida = evaluarLicencia(base, 1, '2026-12-01');
+  assert.equal(vencida.vigente, false);
+  assert.match(vencida.motivo, /venció el 2026-11-30/);
+  assert.equal(evaluarLicencia({ ...base, licencia_estado: 'SUSPENDIDA' }, 1, '2026-11-17').vigente, false);
+  const libre = evaluarLicencia({ licencia_estado: 'ACTIVA', licencia_vencimiento: null, licencia_max_usuarios: null }, 999, '2030-01-01');
+  assert.deepEqual([libre.vigente, libre.diasRestantes, libre.cupoLleno], [true, null, false]);
+});
+
+test('permiso por etapa: cada etapa del flujo tiene su permiso', () => {
+  assert.equal(permisoDeEtapa('Radicacion')?.code, 'creditos:etapa-radicacion');
+  assert.equal(permisoDeEtapa('Validación documental')?.code, 'creditos:etapa-validacion');
+  assert.equal(permisoDeEtapa('Estudio de credito')?.code, 'creditos:etapa-estudio');
+  assert.equal(permisoDeEtapa('Aprobación')?.code, 'creditos:etapa-visacion');
+  assert.equal(permisoDeEtapa('Visación')?.code, 'creditos:etapa-visacion');
+  assert.equal(permisoDeEtapa('Desembolso')?.code, 'creditos:etapa-desembolso');
+  assert.equal(permisoDeEtapa('Firma de documentos'), null);
+});
+
+test('consecutivo de egreso con 6 digitos', () => {
+  assert.equal(formatNumeroEgreso(1), 'CE-000001');
+  assert.equal(formatNumeroEgreso(1061), 'CE-001061');
+});

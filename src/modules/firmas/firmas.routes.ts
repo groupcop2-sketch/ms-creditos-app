@@ -2,6 +2,8 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { env } from '../../config/env.js';
 import type { JwtUserPayload } from '../../types/auth.js';
+import { assertAprobacionEmpresa } from '../creditos/visacion.js';
+import { requirePermisoEtapa } from '../creditos/permisos-etapa.js';
 import { crearFirma, getPdfFirmado, listFirmasCredito, marcarFirmaSimulada, procesarWebhookZapSign } from './firmas.service.js';
 
 const firmaSchema = z.object({
@@ -39,8 +41,9 @@ export async function firmasRoutes(app: FastifyInstance) {
     return listFirmasCredito(params.id);
   });
 
-  app.post('/', { preHandler: [app.authenticate, requirePermission('creditos:create')] }, async (request) => {
+  app.post('/', { preHandler: [app.authenticate, requirePermission('creditos:create'), requirePermisoEtapa('creditos:etapa-visacion')] }, async (request) => {
     const body = firmaSchema.parse(request.body);
+    await assertAprobacionEmpresa(body.creditoId, 'enviar documentos a firma del cliente');
     const user = request.user as JwtUserPayload | undefined;
     return crearFirma({ ...body, usuarioId: user?.sub ? Number(user.sub) : null });
   });

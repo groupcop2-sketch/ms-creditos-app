@@ -214,7 +214,7 @@ async function withClient<T>(runner: (client: ClientLike) => Promise<T>) {
   }
 }
 
-async function getActiveStateId(client: Queryable = pool) {
+export async function getActiveStateId(client: Queryable = pool) {
   const result = await client.query<{ id_estado: number }>(
     'select id_estado from "Creditos"."TBL_ESTADOS" where lower(v_descripcion) = $1 limit 1',
     ['activo']
@@ -227,7 +227,7 @@ async function getActiveStateId(client: Queryable = pool) {
   return result.rows[0].id_estado;
 }
 
-async function ensureModule(client: ClientLike, name: string, description: string) {
+export async function ensureModule(client: ClientLike, name: string, description: string) {
   const existing = await client.query<{ id_modulo: number }>(
     'select id_modulo from "Creditos"."TBL_MODULOS" where lower(v_nom_modulo) = lower($1) limit 1',
     [name]
@@ -245,7 +245,7 @@ async function ensureModule(client: ClientLike, name: string, description: strin
   return created.rows[0].id_modulo;
 }
 
-async function ensureSubmodule(
+export async function ensureSubmodule(
   client: ClientLike,
   moduleId: number,
   name: string,
@@ -662,7 +662,6 @@ export async function replaceRolePermissions(roleId: number, permissionIds: numb
     }
 
     const catalog = await ensureSecurityCatalog();
-    await client.query('delete from "Creditos"."TBL_ROL_SUBMODULO_PERMISO" where id_rol = $1', [roleId]);
 
     const permissionLookup = await client.query<PermissionRow>(
       'select id_permiso, v_nom_permiso, v_desc_rol from "Creditos"."TBL_PERMISOS" where id_permiso = any($1::int[])',
@@ -673,17 +672,39 @@ export async function replaceRolePermissions(roleId: number, permissionIds: numb
       throw new SecurityError('Uno o mas permisos no existen', 404);
     }
 
-    for (const permission of permissionLookup.rows) {
-      const prefix = permission.v_nom_permiso.split(':')[0] as keyof SecurityCatalog['submodules'];
-      const submoduleId = catalog.submodules[prefix];
-      if (!submoduleId) {
-        throw new SecurityError(`No existe submodulo de seguridad para el permiso ${permission.v_nom_permiso}`, 409);
-      }
+    // Non-security permissions (e.g. creditos:*) reuse the submodule they are already assigned under.
+    // Looked up before the delete below, which could remove the only existing assignment.
+    const otherSubmodules = await client.query<{ prefix: string; id_sub_modulo: number; v_nom_submodulo: string }>(
+      `select distinct on (split_part(p.v_nom_permiso, ':', 1))
+         split_part(p.v_nom_permiso, ':', 1) as prefix, rsp.id_sub_modulo, rsp.v_nom_submodulo
+       from "Creditos"."TBL_ROL_SUBMODULO_PERMISO" rsp
+       inner join "Creditos"."TBL_PERMISOS" p on p.id_permiso = rsp.id_permiso
+       order by split_part(p.v_nom_permiso, ':', 1), rsp.id_sub_modulo`
+    );
+    const submoduleByPrefix = new Map(otherSubmodules.rows.map((row) => [row.prefix, row]));
 
-      await client.query(
-        'insert into "Creditos"."TBL_ROL_SUBMODULO_PERMISO" (v_nom_submodulo, id_rol, id_sub_modulo, id_estado, id_permiso) values ($1, $2, $3, $4, $5)',
-        [prefix, roleId, submoduleId, catalog.activeStateId, permission.id_permiso]
-      );
+    await client.query('begin');
+    try {
+      await client.query('delete from "Creditos"."TBL_ROL_SUBMODULO_PERMISO" where id_rol = $1', [roleId]);
+
+      for (const permission of permissionLookup.rows) {
+        const prefix = permission.v_nom_permiso.split(':')[0];
+        const securityId = catalog.submodules[prefix as keyof SecurityCatalog['submodules']];
+        const other = submoduleByPrefix.get(prefix);
+        const submoduleId = securityId ?? other?.id_sub_modulo;
+        if (!submoduleId) {
+          throw new SecurityError(`No existe submodulo para el permiso ${permission.v_nom_permiso}`, 409);
+        }
+
+        await client.query(
+          'insert into "Creditos"."TBL_ROL_SUBMODULO_PERMISO" (v_nom_submodulo, id_rol, id_sub_modulo, id_estado, id_permiso) values ($1, $2, $3, $4, $5)',
+          [securityId ? prefix : other!.v_nom_submodulo, roleId, submoduleId, catalog.activeStateId, permission.id_permiso]
+        );
+      }
+      await client.query('commit');
+    } catch (error) {
+      await client.query('rollback');
+      throw error;
     }
 
     return { updated: true };

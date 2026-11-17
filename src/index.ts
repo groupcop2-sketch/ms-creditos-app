@@ -10,6 +10,8 @@ import { statusRoutes } from './routes/status.js';
 import { registerAuthPlugin } from './plugins/auth.js';
 import { bootstrapSecurityModule } from './modules/security/security.bootstrap.js';
 import { securityRoutes } from './modules/security/security.routes.js';
+import { plataformaRoutes } from './modules/plataforma/plataforma.routes.js';
+import { recaudoRoutes } from './modules/recaudo/recaudo.routes.js';
 import { SecurityError } from './modules/security/security.service.js';
 import { pagaduriasRoutes } from './modules/pagadurias/pagadurias.routes.js';
 import { sociosRoutes } from './modules/socios/socios.routes.js';
@@ -131,6 +133,8 @@ async function main() {
   await app.register(healthRoutes, { prefix: '/api/v1' });
   await app.register(statusRoutes, { prefix: '/api/v1' });
   await app.register(securityRoutes, { prefix: '/api/v1/security' });
+  await app.register(plataformaRoutes, { prefix: '/api/v1/plataforma' });
+  await app.register(recaudoRoutes, { prefix: '/api/v1/recaudo' });
   await app.register(pagaduriasRoutes, { prefix: '/api/v1/empresas' });
   await app.register(pagaduriasRoutes, { prefix: '/api/v1/pagadurias' });
   await app.register(sociosRoutes, { prefix: '/api/v1/socios' });

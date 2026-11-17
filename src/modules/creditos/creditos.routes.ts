@@ -4,7 +4,12 @@ import type { JwtUserPayload } from '../../types/auth.js';
 import { listCreditoEstudios, registrarEstudioCredito } from './estudio-credito.js';
 import { getSoporteClienteArchivo, listSoportesCliente, revisarSoporteCliente } from './soportes-cliente.js';
 import { getDocumentoAdicionalArchivo, listDocumentosAdicionales, subirDocumentoAdicional } from './documentos-adicionales.js';
-import { enviarCartaVisacion, getDatosVisacion, getVisacionPdf, listVisaciones, previewCartaVisacion } from './visacion.js';
+import { ensurePermisosEtapa, requirePermisoEtapa } from './permisos-etapa.js';
+import { guardarCuentaEgreso, listCuentasEgreso, siguienteNumeroEgreso } from './egresos.js';
+import {
+  enviarCartaVisacion, getAprobacionEmpresa, getAprobacionEmpresaArchivo, getDatosVisacion, getVisacionPdf, listVisaciones,
+  previewCartaVisacion, registrarAprobacionEmpresa, requiereAprobacionEmpresa
+} from './visacion.js';
 import {
   createCredito,
   anularDesembolsoCredito,
@@ -30,7 +35,8 @@ import {
   uploadCreditoDocumento,
   uploadCreditoPagoSoporte,
   updateCreditoDocumento,
-  updateCreditoEtapa
+  updateCreditoEtapa,
+  ensureEgresos
 } from './creditos.service.js';
 
 const creditoSchema = z.object({
@@ -102,7 +108,17 @@ const desembolsoSchema = z.object({
   referenciaPago: z.string().trim().nullable().optional(),
   numeroOrden: z.string().trim().nullable().optional(),
   comprobantePago: z.string().trim().nullable().optional(),
+  idCuentaEgreso: z.coerce.number().int().positive().nullable().optional(),
+  fechaConsignacion: z.string().trim().nullable().optional(),
   observacion: z.string().trim().nullable().optional()
+});
+
+const cuentaEgresoSchema = z.object({
+  banco: z.string().trim().min(2).max(180),
+  tipoCuenta: z.enum(['AHORROS', 'CORRIENTE']),
+  numeroCuenta: z.string().trim().regex(/^[0-9 -]{4,40}$/, 'Número de cuenta inválido'),
+  titular: z.string().trim().max(200).nullable().optional(),
+  activo: z.boolean().optional()
 });
 
 const fondeoSchema = z.object({
@@ -159,6 +175,8 @@ function requirePermission(permission: string) {
 }
 
 export async function creditosRoutes(app: FastifyInstance) {
+  ensurePermisosEtapa().catch((err) => app.log.error(err, 'No se pudieron crear los permisos por etapa'));
+
   app.get('/catalogos', { preHandler: [app.authenticate] }, async () => listCreditosCatalogs());
 
   app.get('/', { preHandler: [app.authenticate, requirePermission('creditos:read')] }, async () => listCreditos());
@@ -195,7 +213,7 @@ export async function creditosRoutes(app: FastifyInstance) {
     return listCreditoEstudios(params.id);
   });
 
-  app.post('/:id/estudios', { preHandler: [app.authenticate, requirePermission('creditos:create')] }, async (request) => {
+  app.post('/:id/estudios', { preHandler: [app.authenticate, requirePermission('creditos:create'), requirePermisoEtapa('creditos:etapa-estudio')] }, async (request) => {
     const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
     const monto = z.number().min(0).max(1e12).optional();
     const body = z.object({
@@ -235,7 +253,7 @@ export async function creditosRoutes(app: FastifyInstance) {
     return anularLiquidacionDefinitiva(params.id, { ...body, usuarioId: user?.sub ? Number(user.sub) : null });
   });
 
-  app.post('/desembolsos/:id/anulacion', { preHandler: [app.authenticate, requirePermission('creditos:create')] }, async (request) => {
+  app.post('/desembolsos/:id/anulacion', { preHandler: [app.authenticate, requirePermission('creditos:create'), requirePermisoEtapa('creditos:etapa-desembolso')] }, async (request) => {
     const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
     const body = anulacionOperacionSchema.parse(request.body ?? {});
     const user = request.user as JwtUserPayload | undefined;
@@ -249,21 +267,43 @@ export async function creditosRoutes(app: FastifyInstance) {
     return causarCredito(params.id, { ...body, usuarioId: user?.sub ? Number(user.sub) : null });
   });
 
-  app.post('/:id/decision', { preHandler: [app.authenticate, requirePermission('creditos:create')] }, async (request) => {
+  app.post('/:id/decision', { preHandler: [app.authenticate, requirePermission('creditos:create'), requirePermisoEtapa('creditos:etapa-visacion')] }, async (request) => {
     const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
     const body = decisionSchema.parse(request.body);
     const user = request.user as JwtUserPayload | undefined;
     return decideCredito(params.id, { ...body, usuarioId: user?.sub ? Number(user.sub) : null });
   });
 
-  app.post('/:id/desembolso', { preHandler: [app.authenticate, requirePermission('creditos:create')] }, async (request) => {
+  app.post('/:id/desembolso', { preHandler: [app.authenticate, requirePermission('creditos:create'), requirePermisoEtapa('creditos:etapa-desembolso')] }, async (request) => {
     const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
     const body = desembolsoSchema.parse(request.body);
     const user = request.user as JwtUserPayload | undefined;
     return registrarDesembolso(params.id, { ...body, usuarioId: user?.sub ? Number(user.sub) : null });
   });
 
-  app.post('/:id/fondeo', { preHandler: [app.authenticate, requirePermission('creditos:create')] }, async (request) => {
+  app.get('/cuentas-egreso', { preHandler: [app.authenticate, requirePermission('creditos:read')] }, async (request) => {
+    const query = z.object({ activas: z.coerce.boolean().optional() }).parse(request.query);
+    await ensureEgresos();
+    return listCuentasEgreso(query.activas);
+  });
+
+  app.post('/cuentas-egreso', { preHandler: [app.authenticate, requirePermission('creditos:create')] }, async (request) => {
+    await ensureEgresos();
+    return guardarCuentaEgreso(cuentaEgresoSchema.parse(request.body));
+  });
+
+  app.put('/cuentas-egreso/:id', { preHandler: [app.authenticate, requirePermission('creditos:create')] }, async (request) => {
+    const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    await ensureEgresos();
+    return guardarCuentaEgreso(cuentaEgresoSchema.parse(request.body), params.id);
+  });
+
+  app.get('/egresos/siguiente', { preHandler: [app.authenticate, requirePermission('creditos:read')] }, async () => {
+    await ensureEgresos();
+    return siguienteNumeroEgreso();
+  });
+
+  app.post('/:id/fondeo', { preHandler: [app.authenticate, requirePermission('creditos:create'), requirePermisoEtapa('creditos:etapa-desembolso')] }, async (request) => {
     const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
     const body = fondeoSchema.parse(request.body);
     const user = request.user as JwtUserPayload | undefined;
@@ -318,7 +358,7 @@ export async function creditosRoutes(app: FastifyInstance) {
     const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
     const body = etapaUpdateSchema.parse(request.body);
     const user = request.user as JwtUserPayload | undefined;
-    return updateCreditoEtapa(params.id, { ...body, usuarioId: user?.sub ? Number(user.sub) : null });
+    return updateCreditoEtapa(params.id, { ...body, usuarioId: user?.sub ? Number(user.sub) : null, permisos: user?.permissions ?? [] });
   });
 
   app.patch('/documentos/:id', { preHandler: [app.authenticate, requirePermission('creditos:create')] }, async (request) => {
@@ -362,8 +402,10 @@ export async function creditosRoutes(app: FastifyInstance) {
 
   app.get('/:id/visacion', { preHandler: [app.authenticate, requirePermission('creditos:read')] }, async (request) => {
     const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
-    const [info, visaciones] = await Promise.all([getDatosVisacion(params.id), listVisaciones(params.id)]);
-    return { ...info, visaciones };
+    const [info, visaciones, aprobacionEmpresa, requiereAprobacion] = await Promise.all([
+      getDatosVisacion(params.id), listVisaciones(params.id), getAprobacionEmpresa(params.id), requiereAprobacionEmpresa(params.id)
+    ]);
+    return { ...info, visaciones, aprobacionEmpresa, requiereAprobacionEmpresa: requiereAprobacion };
   });
 
   app.post('/:id/visacion/preview', { preHandler: [app.authenticate, requirePermission('creditos:read')] }, async (request, reply) => {
@@ -372,7 +414,7 @@ export async function creditosRoutes(app: FastifyInstance) {
     return reply.header('Content-Type', 'application/pdf').header('Content-Disposition', `inline; filename="${file.nombreArchivo}"`).send(file.pdf);
   });
 
-  app.post('/:id/visacion/enviar', { preHandler: [app.authenticate, requirePermission('creditos:create')] }, async (request) => {
+  app.post('/:id/visacion/enviar', { preHandler: [app.authenticate, requirePermission('creditos:create'), requirePermisoEtapa('creditos:etapa-visacion')] }, async (request) => {
     const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
     const body = z.object({
       para: z.string().trim().email(),
@@ -382,6 +424,25 @@ export async function creditosRoutes(app: FastifyInstance) {
     }).parse(request.body);
     const user = request.user as JwtUserPayload | undefined;
     return enviarCartaVisacion(params.id, { ...body, usuarioId: user?.sub ? Number(user.sub) : null });
+  });
+
+  app.post('/:id/visacion/aprobacion-empresa', { preHandler: [app.authenticate, requirePermission('creditos:create'), requirePermisoEtapa('creditos:etapa-visacion')] }, async (request) => {
+    const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    const body = z.object({
+      fechaAprobacion: z.string().regex(/^d{4}-d{2}-d{2}$/),
+      aprobadoPor: z.string().trim().min(3).max(200),
+      cargo: z.string().trim().max(120).nullish(),
+      observacion: z.string().trim().max(1000).nullish(),
+      archivo: z.object({ nombre: z.string().min(1).max(240), mimeType: z.string().min(3), base64: z.string().min(10) }).nullish()
+    }).parse(request.body);
+    const user = request.user as JwtUserPayload | undefined;
+    return registrarAprobacionEmpresa(params.id, { ...body, usuarioId: user?.sub ? Number(user.sub) : null });
+  });
+
+  app.get('/aprobaciones-empresa/:id/archivo', { preHandler: [app.authenticate, requirePermission('creditos:read')] }, async (request, reply) => {
+    const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    const file = await getAprobacionEmpresaArchivo(params.id);
+    return reply.header('Content-Type', file.mimeType).header('Content-Disposition', `inline; filename="${encodeURIComponent(file.nombre)}"`).send(file.contenido);
   });
 
   app.get('/visaciones/:id/pdf', { preHandler: [app.authenticate, requirePermission('creditos:read')] }, async (request, reply) => {
@@ -433,7 +494,7 @@ export async function creditosRoutes(app: FastifyInstance) {
       .send(file.contenido);
   });
 
-  app.patch('/soportes-cliente/:id', { preHandler: [app.authenticate, requirePermission('creditos:create')] }, async (request) => {
+  app.patch('/soportes-cliente/:id', { preHandler: [app.authenticate, requirePermission('creditos:create'), requirePermisoEtapa('creditos:etapa-validacion')] }, async (request) => {
     const params = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
     const body = z.object({ estado: z.enum(['APROBADO', 'RECHAZADO']), observacion: z.string().max(1000).nullish() }).parse(request.body);
     const user = request.user as JwtUserPayload | undefined;
